@@ -1,5 +1,6 @@
 #include "MapReduceFramework.h"
 #include "MapReduceClient.h"
+#include "Barrier.h"
 #include <vector>
 #include <atomic>
 #include <thread>
@@ -10,12 +11,48 @@
 // Define constants or macros if needed
 #define UNDEFINED_PERCENTAGE -1.0f
 
+// Define the JobState structure to hold job state information
 
-typedef struct {
-    JobState state;
+struct JobContext {
+    // — Client & data pointers —
+    const MapReduceClient& client;   // to call map() and reduce()
+    const InputVec*    inputVec;     // pointer to the user’s input [(K1*,V1*)…]
+          OutputVec*   outputVec;    // pointer to the global output [(K3*,V3*)…]
+    const int          numThreads;   // # of worker threads to spawn
 
+    // — Thread management —
+    std::vector<std::thread> workers;    // the actual thread objects
 
-} JobContext;
+    // — Per‐thread map‐phase state —
+    std::vector<IntermediateVec>  threadIntermediates;  
+        // one vector<K2*,V2*> per thread
+    std::vector<void*>            threadContexts;       
+        // one “emit‐ctx” pointer per thread (passed to emit2/emit3)
+
+    // — Input‐claiming counter (map) —
+    std::atomic<size_t>           nextInputIndex{0};
+        // each thread does fetch_add(1) to grab the next (K1*,V1*)
+
+    Barrier                        mapSortBarrier;
+
+    // — Shuffle‐phase queue & coordination —
+    std::mutex                     shuffleMutex;
+    std::queue<IntermediateVec>    shuffleQueue;
+        // thread 0 will push each key‐group here
+    std::atomic<bool>              shuffleDone{false};
+        // signals the other threads that no more groups will be enqueued
+
+    // — Job state & progress counters (packed into one atomic) —
+    std::atomic<uint64_t>          jobState{0};
+        // e.g. bits 0–1 = stage enum (MAP, SORT, SHUFFLE, REDUCE)
+        //      bits 2–32 = # completed in current stage
+        //      bits 33–63 = # total in current stage
+
+    // — (Optional) convenience counters —
+    std::atomic<size_t>            totalIntermediates{0};  // bumped in emit2
+    std::atomic<size_t>            totalReduceCalls{0};    // bumped in emit3
+};
+
 
 /**
  * Emits an intermediate key-value pair (K2, V2) during the map phase.
