@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <iostream>
 
+
 // Define constants or macros if needed
 #define UNDEFINED_PERCENTAGE -1.0f
 
@@ -51,6 +52,16 @@ struct JobContext {
     // — (Optional) convenience counters —
     std::atomic<size_t>            totalIntermediates{0};  // bumped in emit2
     std::atomic<size_t>            totalReduceCalls{0};    // bumped in emit3
+
+    // Static function to calculate the total number of tasks (bits 33–63)
+    static uint32_t calculateTotal(uint64_t jobState) {
+      return static_cast<uint32_t>((jobState >> 33) & 0x1FFFFFFFF); // Mask for 31 bits
+    }
+
+    // Static function to calculate the number of completed tasks (bits 2–32)
+    static uint32_t calculateProgress(uint64_t jobState) {
+      return static_cast<uint32_t>((jobState >> 2) & 0x1FFFFFFF); // Mask for 30 bits
+    }
 };
 
 
@@ -128,7 +139,26 @@ void waitForJob(JobHandle job);
  * @param state Pointer to a `JobState` structure, which will be populated with the
  *              current stage and progress percentage of the job.
  */
-void getJobState(JobHandle job, JobState* state);
+void getJobState(JobHandle job, JobState* state)
+{
+    auto jobContext = static_cast<JobContext*>(job);
+    if (!jobContext) {
+        sysErr("Invalid job handle");
+    }
+
+    // Lock the mutex to safely access the job state
+    std::lock_guard<std::mutex> lock(jobContext->shuffleMutex);
+    uint64_t atomicValue = jobContext->jobState.load();
+    uint32_t total = JobContext::calculateTotal(atomicValue);
+    uint32_t progress = JobContext::calculateProgress(atomicValue);
+
+    if (total == 0) {
+        state->percentage = UNDEFINED_PERCENTAGE;
+    } else {
+        state->percentage = 100 * (static_cast<float>(progress) / static_cast<float>(total));
+    }
+    state->stage = JobContext::calculateStage(atomicValue);
+}
 
 /**
  * Closes the MapReduce job handle and releases associated resources.
