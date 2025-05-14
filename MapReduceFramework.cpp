@@ -12,7 +12,14 @@
 // Define constants or macros if needed
 #define UNDEFINED_PERCENTAGE -1.0f
 
+
 // Define the JobState structure to hold job state information
+struct ThreadContext {
+    JobContext* jobContext;  // Points to the parent JobContext
+    int threadId;            // Unique ID (0 to numThreads-1)
+    IntermediateVec intermediates; // Local intermediate results
+
+};
 
 struct JobContext {
     // — Client & data pointers —
@@ -24,11 +31,8 @@ struct JobContext {
     // — Thread management —
     std::vector<std::thread> workers;    // the actual thread objects
 
-    // — Per‐thread map‐phase state —
-    std::vector<IntermediateVec>  threadIntermediates;  
-        // one vector<K2*,V2*> per thread
-    std::vector<void*>            threadContexts;       
-        // one “emit‐ctx” pointer per thread (passed to emit2/emit3)
+    std::vector<ThreadContext> threadContexts;
+    // one “emit‐ctx” pointer per thread (passed to emit2/emit3)
 
     // — Input‐claiming counter (map) —
     std::atomic<size_t>           nextInputIndex{0};
@@ -62,6 +66,16 @@ struct JobContext {
     static uint32_t calculateProgress(uint64_t jobState) {
       return static_cast<uint32_t>((jobState >> 2) & 0x1FFFFFFF); // Mask for 30 bits
     }
+
+    JobContext(const MapReduceClient& client, const InputVec& inputVec, OutputVec& outputVec, int numThreads)
+        : client(client), inputVec(&inputVec), outputVec(&outputVec), numThreads(numThreads),
+          nextInputIndex(0), shuffleDone(false), jobState(0), totalIntermediates(0), totalReduceCalls(0),
+          mapSortBarrier(numThreads) {
+      for (int i = 0; i < numThreads; ++i) {
+        threadContexts[i] = ThreadContext{this, i, IntermediateVec()};
+      }
+      // Additional initialization logic if needed
+    }
 };
 
 
@@ -87,7 +101,7 @@ void emit2(K2* key, V2* value, void* context);
  * by the user.
  *
  * @param key Pointer to the key of type K3. The key must remain valid until the end of the job.
- * @param value Pointer to the value of type V3. The value must remain valid until the end of the job.
+ * @param   value Pointer to the value of type V3. The value must remain valid until the end of the job.
  * @param context Context object for the MapReduce job, which manages the output vector
  *                for final key-value pairs.
  */
@@ -110,10 +124,50 @@ void emit3(K3* key, V3* value, void* context);
  *                         of parallelism for the map and reduce phases.
  * @return A handle to the MapReduce job, which can be used with other job-related functions.
  */
-JobHandle startMapReduceJob(const MapReduceClient& client,
-                            const InputVec& inputVec,
-                            OutputVec& outputVec,
-                            int multiThreadLevel);
+JobContext* startMapReduceJob(const MapReduceClient& client,
+                              const InputVec& inputVec,
+                              OutputVec& outputVec,
+                              int multiThreadLevel) {
+  auto jobContext = new (std::nothrow) JobContext(client, inputVec, outputVec, multiThreadLevel);
+  if (!jobContext) {
+    throw std::runtime_error("Failed to allocate JobContext");
+  }
+
+  try {
+    for (int i = 0; i < multiThreadLevel; ++i) {
+      jobContext->workers.emplace_back([jobContext, i]() {
+          try {
+            // Map phase
+            mapPhase(jobContext, i);
+
+            // Sort phase
+            sortPhase(jobContext, i);
+
+            // Barrier synchronization to enter shuffle phase
+            jobContext->mapSortBarrier.arrive_and_wait();
+
+            // Only thread 0 performs the shuffle phase
+            if (i == 0) {
+              shufflePhase(jobContext);
+            }
+
+            // Reduce phase
+            reducePhase(jobContext, i);
+          } catch (const std::exception& e) {
+            std::cerr << "Error in thread " << i << ": " << e.what() << '\n';
+          } catch (...) {
+            std::cerr << "Unknown error occurred in thread " << i << '\n';
+          }
+      });
+    }
+  } catch (const std::system_error& e) {
+    delete jobContext;
+    throw std::runtime_error("Failed to create threads: " + std::string(e.what()));
+  }
+
+  return jobContext;
+}
+
 
 /**
  * Waits for the MapReduce job to complete.
