@@ -1,28 +1,20 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.5)
+project(barrierdemo)
 
-# Project name and version
-project(BarrierDemo VERSION 1.0 LANGUAGES CXX)
-
-# Set C++ standard
+# Use C++11 or newer
 set(CMAKE_CXX_STANDARD 11)
-set(CMAKE_CXX_STANDARD_REQUIRED True)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Add the Barrier library
-add_library(Barrier
-        Barrier/Barrier.cpp
-)
+# Tell CMake where to find your headers (optional if headers are in the same dir)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
-# Add the barrierdemo executable
+# Define the executable and its sources
 add_executable(barrierdemo
-        Barrier/barrierdemo.cpp
+    Barrier.cpp
+    barrierdemo.cpp
 )
 
-# Link the Barrier library to the barrierdemo executable
-target_link_libraries(barrierdemo PRIVATE Barrier)
-
-# Add pthread for threading support
+# Find & link the Threads (pthreads) library
 find_package(Threads REQUIRED)
 target_link_libraries(barrierdemo PRIVATE Threads::Threads)
-
-# Include directories
-target_include_directories(barrierdemo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Barrier)
