@@ -235,19 +235,18 @@ void emit3(K3* key, V3* value, void* context)
  *                         of parallelism for the map and reduce phases.
  * @return A handle to the MapReduce job, which can be used with other job-related functions.
  */
-JobHandle startMapReduceJob(const MapReduceClient& client, const InputVec&
-inputVec,OutputVec& outputVec, int multiThreadLevel)
-{
-  auto jobContext = new (std::nothrow) JobContext(client, inputVec, outputVec, multiThreadLevel);
-  if (!jobContext) {
-    std::fprintf(stderr, "system error: Failed to allocate memory for "
-                         "JobContext\n");}
-    std::exit (1)
+JobHandle startMapReduceJob(const MapReduceClient& client, const InputVec& inputVec, OutputVec& outputVec, int multiThreadLevel)
+    {
+      auto jobContext = new (std::nothrow) JobContext(client, inputVec, outputVec, multiThreadLevel);
+      if (!jobContext) {
+        std::fprintf(stderr, "system error: Failed to allocate memory for "
+                             "JobContext\n");
+        std::exit(1);
+      }
 
-  try {
-    for (int i = 0; i < multiThreadLevel; ++i) {
-      jobContext->workers.emplace_back([jobContext, i]() {
-          try {
+      for (int i = 0; i < multiThreadLevel; ++i) {
+        try {
+          jobContext->workers.emplace_back([jobContext, i]() {
             // Map phase
             mapPhase(jobContext, i);
 
@@ -264,22 +263,16 @@ inputVec,OutputVec& outputVec, int multiThreadLevel)
 
             // Reduce phase
             reducePhase(jobContext, i);
-          } catch (const std::exception& e) {
-            std::cerr << "Error in thread " << i << ": " << e.what() << '\n';
-          } catch (...) {
-            std::cerr << "Unknown error occurred in thread " << i << '\n';
-          }
-      });
-    }  } catch (const std::system_error& e) {
-    delete jobContext;
-    std::fprintf(stderr, "system error: Failed to allocate memory for thread: %s\n",
-                 e.what());
-    std::exit(1);
-
-  }
-
-  return jobContext;
-}
+          });
+        } catch (const std::exception& e) {
+          delete jobContext;
+          std::fprintf(stderr, "system error: Failed to allocate memory for thread: %s\n",
+                       e.what());
+          std::exit(1);
+        }
+      }
+      return jobContext;
+    }
 
 
 /**
