@@ -104,19 +104,44 @@ void sortPhase(JobContext* jobContext, int threadID) {
     jobContext->mapSortBarrier.barrier();
 }
 
-void shufflePhase(JobContext* jobContext) {
-    // Only thread 0 performs the shuffle phase
-    auto& shuffleQueue = jobContext->shuffleQueue;
-    auto& intermediateVec = jobContext->intermediates;
+void shufflePhase(JobContext* ctx) {
+  // 1) Keep going until all per-thread vectors are drained
+  while (true) {
+    // 1a) Find the next key to process:
+    K2* currentKey = nullptr;
+    for (int t = 0; t < ctx->numThreads; ++t) {
+      auto& vec = ctx->intermediates[t];
+      if (!vec.empty()) {
+        K2* candidate = vec.back().first;
+        if (!currentKey || *candidate < *currentKey) {
+          currentKey = candidate;
+        }
+      }
+    }
+    if (!currentKey) break;  // done all keys
 
-    // Move all intermediate vectors to the shuffle queue
-    for (int i = 0; i < jobContext->numThreads; ++i) {
-        shuffleQueue.push(std::move(intermediateVec[i]));
+    // 1b) Peel off _all_ pairs == currentKey from each thread’s vector
+    IntermediateVec group;
+    for (int t = 0; t < ctx->numThreads; ++t) {
+      auto& vec = ctx->intermediates[t];
+      while (!vec.empty() && *vec.back().first == *currentKey) {
+        group.push_back(vec.back());
+        vec.pop_back();
+      }
     }
 
-    // Mark shuffle as done
-    jobContext->shuffleDone.store(true);
+    // 1c) Push that group onto the shared queue
+    {
+      std::lock_guard<std::mutex> lg(ctx->shuffleMutex);
+      ctx->shuffleQueue.push(std::move(group));
+    }
+    ctx->queueSize.fetch_add(1);  // your atomic counter for number of groups
+  }
+
+  // 2) Signal “no more groups”  
+  ctx->shuffleDone.store(true, std::memory_order_release);
 }
+
 
 /**
  * Emits a final key-value pair (K3, V3) during the reduce phase.
