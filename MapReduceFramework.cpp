@@ -1,6 +1,6 @@
 #include "MapReduceFramework.h"
 #include "MapReduceClient.h"
-#include "Barrier.h"
+#include "Barrier/Barrier.h"
 #include <vector>
 #include <atomic>
 #include <thread>
