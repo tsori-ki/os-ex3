@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <iostream>
 #include <queue>
+#include <algorithm>
 
 
 // Define constants or macros if needed
@@ -88,6 +89,33 @@ void emit2(K2* key, V2* value, void* context)
 
   // Add the key-value pair to the intermediate vector
   intermediateVec->emplace_back(key, value);
+}
+
+void sortPhase(JobContext* jobContext, int threadID) {
+    auto& intermediateVec = jobContext->intermediates[threadID];
+
+    // Sort the intermediate vector
+    std::sort(intermediateVec.begin(), intermediateVec.end(),
+              [](const IntermediatePair& a, const IntermediatePair& b) {
+                  return *(a.first) < *(b.first);
+              });
+
+    // Barrier synchronization to enter shuffle phase
+    jobContext->mapSortBarrier.barrier();
+}
+
+void shufflePhase(JobContext* jobContext) {
+    // Only thread 0 performs the shuffle phase
+    auto& shuffleQueue = jobContext->shuffleQueue;
+    auto& intermediateVec = jobContext->intermediates;
+
+    // Move all intermediate vectors to the shuffle queue
+    for (int i = 0; i < jobContext->numThreads; ++i) {
+        shuffleQueue.push(std::move(intermediateVec[i]));
+    }
+
+    // Mark shuffle as done
+    jobContext->shuffleDone.store(true);
 }
 
 /**
