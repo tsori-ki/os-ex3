@@ -76,19 +76,18 @@ void mapPhase(JobContext* jobContext, int threadID) {
         client.map(inputVec[inputIndex].first, inputVec[inputIndex].second, &intermediateVec);
     }
 }
+
 void emit2(K2* key, V2* value, void* context)
 {
-    auto jobContext = static_cast<JobContext*>(context);
-    if (!jobContext) {
-        std::cerr << "Invalid job context" << std::endl;
-        return;
-    }
+  // Cast the context to an IntermediateVec pointer
+  auto intermediateVec = static_cast<IntermediateVec*>(context);
+  if (!intermediateVec) {
+    std::cerr << "Invalid intermediate vector context" << std::endl;
+    return;
+  }
 
-    // Get the thread ID
-    int threadID = std::this_thread::get_id().hash() % jobContext->numThreads;
-
-    // Add the key-value pair to the intermediate vector for this thread
-    jobContext->intermediates[threadID].emplace_back(key, value);
+  // Add the key-value pair to the intermediate vector
+  intermediateVec->emplace_back(key, value);
 }
 
 /**
