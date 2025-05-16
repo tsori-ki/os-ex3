@@ -105,8 +105,8 @@ void emit2(K2* key, V2* value, void* context)
   // Cast the context to an IntermediateVec pointer
   auto intermediateVec = static_cast<IntermediateVec*>(context);
   if (!intermediateVec) {
-    std::cerr << "Invalid intermediate vector context" << std::endl;
-    return;
+    std::fprintf(stderr, "system error: invalid intermediate vector context\n");
+    std::exit (1);
   }
 
   // Add the key-value pair to the intermediate vector
@@ -193,7 +193,6 @@ void reducePhase(JobContext* jobContext, int threadID) {
         }
     }
 }
-
 /**
  * Emits a final key-value pair (K3, V3) during the reduce phase.
  *
@@ -211,8 +210,8 @@ void emit3(K3* key, V3* value, void* context)
     // Cast the context to an OutputVec pointer
     auto outputVec = static_cast<OutputVec*>(context);
     if (!outputVec) {
-        std::cerr << "Invalid output vector context" << std::endl;
-        return;
+        std::fprintf(stderr, "system error: invalid output vector context\n");
+        std::exit (1);
     }
 
     // Add the key-value pair to the output vector
@@ -241,8 +240,9 @@ inputVec,OutputVec& outputVec, int multiThreadLevel)
 {
   auto jobContext = new (std::nothrow) JobContext(client, inputVec, outputVec, multiThreadLevel);
   if (!jobContext) {
-    throw std::runtime_error("Failed to allocate JobContext");
-  }
+    std::fprintf(stderr, "system error: Failed to allocate memory for "
+                         "JobContext\n");}
+    std::exit (1)
 
   try {
     for (int i = 0; i < multiThreadLevel; ++i) {
@@ -272,7 +272,10 @@ inputVec,OutputVec& outputVec, int multiThreadLevel)
       });
     }  } catch (const std::system_error& e) {
     delete jobContext;
-    throw std::runtime_error("Failed to create threads: " + std::string(e.what()));
+    std::fprintf(stderr, "system error: Failed to allocate memory for thread: %s\n",
+                 e.what());
+    std::exit(1);
+
   }
 
   return jobContext;
@@ -293,7 +296,9 @@ void waitForJob(JobHandle job)
 {
     auto jobContext = static_cast<JobContext*>(job);
     if (!jobContext) {
-        throw std::invalid_argument("Invalid job handle");
+      std::fprintf(stderr, "system error: invalid job handle\n");
+      std::exit (1);
+
     }
 
     // Wait for all worker threads to finish
@@ -323,8 +328,11 @@ void getJobState(JobHandle job, JobState* state)
 {
     auto jobContext = static_cast<JobContext*>(job);
     if (!jobContext) {
-        throw std::invalid_argument("Invalid job handle");
-    }
+      std::fprintf(stderr, "system error: invalid job handle\n");
+      std::exit (1);    }
+    if (!state) {
+      std::fprintf(stderr, "system error: invalid job state pointer\n");
+      std::exit (1);    }
 
     // Lock the mutex to safely access the job state
     std::lock_guard<std::mutex> lock(jobContext->shuffleMutex);
@@ -354,8 +362,8 @@ void closeJobHandle(JobHandle job)
 {
     auto jobContext = static_cast<JobContext*>(job);
     if (!jobContext) {
-        throw std::invalid_argument("Invalid job handle");
-    }
+      std::fprintf(stderr, "system error: invalid job handle\n");
+      std::exit (1);    }
 
     // Clean up the job context
     delete jobContext;
