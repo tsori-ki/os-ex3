@@ -11,6 +11,7 @@
 #include <algorithm>
 
 
+
 // Define constants or macros if needed
 #define UNDEFINED_PERCENTAGE -1.0f
 
@@ -34,6 +35,7 @@ struct JobContext {
     // — Shuffle-phase queue & coordination —
     std::mutex shuffleMutex;
     std::queue<IntermediateVec> shuffleQueue;
+    std::atomic<uint64_t> queueSize{0}; // Number of groups in the shuffle queue
     std::atomic<bool> shuffleDone{false};
 
     // — Job state & progress counters —
@@ -45,6 +47,20 @@ struct JobContext {
     JobContext(const MapReduceClient& client, const InputVec& inputVec, OutputVec& outputVec, int numThreads)
         : client(client), inputVec(&inputVec), outputVec(&outputVec), numThreads(numThreads),
           intermediates(numThreads), mapSortBarrier(numThreads) {
+    }
+
+    // Static function to calculate the total number of tasks (bits 33–63)
+    static uint32_t calculateTotal(uint64_t jobState) {
+      return static_cast<uint32_t>((jobState >> 33) & 0x1FFFFFFFF); // Mask for 31 bits
+    }
+
+    // Static function to calculate the number of completed tasks (bits 2–32)
+    static uint32_t calculateProgress(uint64_t jobState) {
+      return static_cast<uint32_t>((jobState >> 2) & 0x1FFFFFFF); // Mask for 30 bits
+    }
+    // Static function to calculate the current stage (bits 0–1)
+    static stage_t calculateStage(uint64_t jobState) {
+      return static_cast<stage_t>(jobState & 0x3); // Mask for 2 bits
     }
 };
 
@@ -110,13 +126,15 @@ void sortPhase(JobContext* jobContext, int threadID) {
     jobContext->mapSortBarrier.barrier();
 }
 
-void shufflePhase(JobContext* ctx) {
+
+
+void shufflePhase(JobContext* JobContext) {
   // 1) Keep going until all per-thread vectors are drained
   while (true) {
     // 1a) Find the next key to process:
     K2* currentKey = nullptr;
-    for (int t = 0; t < ctx->numThreads; ++t) {
-      auto& vec = ctx->intermediates[t];
+    for (int t = 0; t < JobContext->numThreads; ++t) {
+      auto& vec = JobContext->intermediates[t];
       if (!vec.empty()) {
         K2* candidate = vec.back().first;
         if (!currentKey || *candidate < *currentKey) {
@@ -128,8 +146,8 @@ void shufflePhase(JobContext* ctx) {
 
     // 1b) Peel off _all_ pairs == currentKey from each thread’s vector
     IntermediateVec group;
-    for (int t = 0; t < ctx->numThreads; ++t) {
-      auto& vec = ctx->intermediates[t];
+    for (int t = 0; t < JobContext->numThreads; ++t) {
+      auto& vec = JobContext->intermediates[t];
       while (!vec.empty() && keysEqual(vec.back().first, currentKey)) {
           group.push_back(vec.back());
           vec.pop_back();
@@ -138,16 +156,43 @@ void shufflePhase(JobContext* ctx) {
 
     // 1c) Push that group onto the shared queue
     {
-      std::lock_guard<std::mutex> lg(ctx->shuffleMutex);
-      ctx->shuffleQueue.push(std::move(group));
+      std::lock_guard<std::mutex> lg(JobContext->shuffleMutex);
+      JobContext->shuffleQueue.push(std::move(group));
     }
-    ctx->queueSize.fetch_add(1);  // your atomic counter for number of groups
+    JobContext->queueSize.fetch_add(1);  // your atomic counter for number of groups
   }
 
   // 2) Signal “no more groups”  
-  ctx->shuffleDone.store(true, std::memory_order_release);
+  JobContext->shuffleDone.store(true, std::memory_order_release);
 }
 
+
+void reducePhase(JobContext* jobContext, int threadID) {
+    auto& client = jobContext->client;
+    auto& outputVec = *jobContext->outputVec;
+    auto& shuffleQueue = jobContext->shuffleQueue;
+
+    while (true) {
+        IntermediateVec group;
+
+        // Lock the mutex to safely access the shuffle queue
+        {
+            std::lock_guard<std::mutex> lg(jobContext->shuffleMutex);
+            if (shuffleQueue.empty() && jobContext->shuffleDone.load()) {
+                break; // No more groups to process
+            }
+            if (!shuffleQueue.empty()) {
+                group = std::move(shuffleQueue.front());
+                shuffleQueue.pop();
+            }
+        }
+
+        // If we have a group, call the reduce function
+        if (!group.empty()) {
+            client.reduce(&group, &outputVec);
+        }
+    }
+}
 
 /**
  * Emits a final key-value pair (K3, V3) during the reduce phase.
@@ -161,7 +206,18 @@ void shufflePhase(JobContext* ctx) {
  * @param context Context object for the MapReduce job, which manages the output vector
  *                for final key-value pairs.
  */
-void emit3(K3* key, V3* value, void* context);
+void emit3(K3* key, V3* value, void* context)
+{
+    // Cast the context to an OutputVec pointer
+    auto outputVec = static_cast<OutputVec*>(context);
+    if (!outputVec) {
+        std::cerr << "Invalid output vector context" << std::endl;
+        return;
+    }
+
+    // Add the key-value pair to the output vector
+    outputVec->emplace_back(key, value);
+}
 
 /**
  * Starts a MapReduce job with the given client, input, and output vectors.
@@ -233,7 +289,23 @@ inputVec,OutputVec& outputVec, int multiThreadLevel)
  * @param job Handle to the MapReduce job. The handle must have been obtained from
  *            `startMapReduceJob`.
  */
-void waitForJob(JobHandle job);
+void waitForJob(JobHandle job)
+{
+    auto jobContext = static_cast<JobContext*>(job);
+    if (!jobContext) {
+        throw std::invalid_argument("Invalid job handle");
+    }
+
+    // Wait for all worker threads to finish
+    for (auto& worker : jobContext->workers) {
+        if (worker.joinable()) {
+            worker.join();
+        }
+    }
+
+    // Clean up the job context
+    delete jobContext;
+}
 
 /**
  * Retrieves the current state of the MapReduce job.
@@ -251,7 +323,7 @@ void getJobState(JobHandle job, JobState* state)
 {
     auto jobContext = static_cast<JobContext*>(job);
     if (!jobContext) {
-        sysErr("Invalid job handle");
+        throw std::invalid_argument("Invalid job handle");
     }
 
     // Lock the mutex to safely access the job state
@@ -278,4 +350,13 @@ void getJobState(JobHandle job, JobState* state)
  * @param job Handle to the MapReduce job. The handle must have been obtained from
  *            `startMapReduceJob`.
  */
-void closeJobHandle(JobHandle job);
+void closeJobHandle(JobHandle job)
+{
+    auto jobContext = static_cast<JobContext*>(job);
+    if (!jobContext) {
+        throw std::invalid_argument("Invalid job handle");
+    }
+
+    // Clean up the job context
+    delete jobContext;
+}
