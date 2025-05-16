@@ -7,77 +7,45 @@
 #include <mutex>
 #include <condition_variable>
 #include <iostream>
+#include <queue>
 
 
 // Define constants or macros if needed
 #define UNDEFINED_PERCENTAGE -1.0f
 
 
-// Define the JobState structure to hold job state information
-struct ThreadContext {
-    JobContext* jobContext;  // Points to the parent JobContext
-    int threadId;            // Unique ID (0 to numThreads-1)
-    IntermediateVec intermediates; // Local intermediate results
-
-};
-
 struct JobContext {
     // — Client & data pointers —
     const MapReduceClient& client;   // to call map() and reduce()
-    const InputVec*    inputVec;     // pointer to the user’s input [(K1*,V1*)…]
-          OutputVec*   outputVec;    // pointer to the global output [(K3*,V3*)…]
-    const int          numThreads;   // # of worker threads to spawn
+    const InputVec* inputVec;        // pointer to the user’s input [(K1*,V1*)…]
+    OutputVec* outputVec;            // pointer to the global output [(K3*,V3*)…]
+    const int numThreads;            // # of worker threads to spawn
 
     // — Thread management —
     std::vector<std::thread> workers;    // the actual thread objects
 
-    std::vector<ThreadContext> threadContexts;
-    // one “emit‐ctx” pointer per thread (passed to emit2/emit3)
+    // — Thread-specific data —
+    std::vector<IntermediateVec> intermediates; // One intermediate vector per thread
 
-    // — Input‐claiming counter (map) —
-    std::atomic<size_t>           nextInputIndex{0};
-        // each thread does fetch_add(1) to grab the next (K1*,V1*)
+    // — Input-claiming counter (map) —
+    std::atomic<size_t> nextInputIndex{0};
 
-    Barrier                        mapSortBarrier;
+    // — Shuffle-phase queue & coordination —
+    std::mutex shuffleMutex;
+    std::queue<IntermediateVec> shuffleQueue;
+    std::atomic<bool> shuffleDone{false};
 
-    // — Shuffle‐phase queue & coordination —
-    std::mutex                     shuffleMutex;
-    std::queue<IntermediateVec>    shuffleQueue;
-        // thread 0 will push each key‐group here
-    std::atomic<bool>              shuffleDone{false};
-        // signals the other threads that no more groups will be enqueued
+    // — Job state & progress counters —
+    std::atomic<uint64_t> jobState{0};
 
-    // — Job state & progress counters (packed into one atomic) —
-    std::atomic<uint64_t>          jobState{0};
-        // e.g. bits 0–1 = stage enum (MAP, SORT, SHUFFLE, REDUCE)
-        //      bits 2–32 = # completed in current stage
-        //      bits 33–63 = # total in current stage
-
-    // — (Optional) convenience counters —
-    std::atomic<size_t>            totalIntermediates{0};  // bumped in emit2
-    std::atomic<size_t>            totalReduceCalls{0};    // bumped in emit3
-
-    // Static function to calculate the total number of tasks (bits 33–63)
-    static uint32_t calculateTotal(uint64_t jobState) {
-      return static_cast<uint32_t>((jobState >> 33) & 0x1FFFFFFFF); // Mask for 31 bits
-    }
-
-    // Static function to calculate the number of completed tasks (bits 2–32)
-    static uint32_t calculateProgress(uint64_t jobState) {
-      return static_cast<uint32_t>((jobState >> 2) & 0x1FFFFFFF); // Mask for 30 bits
-    }
+    // — Barrier for synchronization —
+    Barrier mapSortBarrier;
 
     JobContext(const MapReduceClient& client, const InputVec& inputVec, OutputVec& outputVec, int numThreads)
         : client(client), inputVec(&inputVec), outputVec(&outputVec), numThreads(numThreads),
-          nextInputIndex(0), shuffleDone(false), jobState(0), totalIntermediates(0), totalReduceCalls(0),
-          mapSortBarrier(numThreads) {
-      for (int i = 0; i < numThreads; ++i) {
-        threadContexts[i] = ThreadContext{this, i, IntermediateVec()};
-      }
-      // Additional initialization logic if needed
+          intermediates(numThreads), mapSortBarrier(numThreads) {
     }
 };
-
 
 /**
  * Emits an intermediate key-value pair (K2, V2) during the map phase.
@@ -91,7 +59,37 @@ struct JobContext {
  * @param context Context object for the MapReduce job, which manages thread-local storage
  *                for intermediate key-value pairs.
  */
-void emit2(K2* key, V2* value, void* context);
+
+void mapPhase(JobContext* jobContext, int threadID) {
+    auto& client = jobContext->client;
+    auto& inputVec = *jobContext->inputVec;
+    auto& intermediateVec = jobContext->intermediates[threadID];
+
+    for (size_t i = 0; i < inputVec.size(); ++i) {
+        // Claim the next input index
+        size_t inputIndex = jobContext->nextInputIndex.fetch_add(1);
+        if (inputIndex >= inputVec.size()) {
+            break; // No more inputs to process
+        }
+
+        // Call the map function
+        client.map(inputVec[inputIndex].first, inputVec[inputIndex].second, &intermediateVec);
+    }
+}
+void emit2(K2* key, V2* value, void* context)
+{
+    auto jobContext = static_cast<JobContext*>(context);
+    if (!jobContext) {
+        std::cerr << "Invalid job context" << std::endl;
+        return;
+    }
+
+    // Get the thread ID
+    int threadID = std::this_thread::get_id().hash() % jobContext->numThreads;
+
+    // Add the key-value pair to the intermediate vector for this thread
+    jobContext->intermediates[threadID].emplace_back(key, value);
+}
 
 /**
  * Emits a final key-value pair (K3, V3) during the reduce phase.
@@ -124,10 +122,9 @@ void emit3(K3* key, V3* value, void* context);
  *                         of parallelism for the map and reduce phases.
  * @return A handle to the MapReduce job, which can be used with other job-related functions.
  */
-JobContext* startMapReduceJob(const MapReduceClient& client,
-                              const InputVec& inputVec,
-                              OutputVec& outputVec,
-                              int multiThreadLevel) {
+JobHandle startMapReduceJob(const MapReduceClient& client, const InputVec&
+inputVec,OutputVec& outputVec, int multiThreadLevel)
+{
   auto jobContext = new (std::nothrow) JobContext(client, inputVec, outputVec, multiThreadLevel);
   if (!jobContext) {
     throw std::runtime_error("Failed to allocate JobContext");
@@ -144,7 +141,7 @@ JobContext* startMapReduceJob(const MapReduceClient& client,
             sortPhase(jobContext, i);
 
             // Barrier synchronization to enter shuffle phase
-            jobContext->mapSortBarrier.arrive_and_wait();
+            jobContext->mapSortBarrier.barrier();
 
             // Only thread 0 performs the shuffle phase
             if (i == 0) {
@@ -159,8 +156,7 @@ JobContext* startMapReduceJob(const MapReduceClient& client,
             std::cerr << "Unknown error occurred in thread " << i << '\n';
           }
       });
-    }
-  } catch (const std::system_error& e) {
+    }  } catch (const std::system_error& e) {
     delete jobContext;
     throw std::runtime_error("Failed to create threads: " + std::string(e.what()));
   }
