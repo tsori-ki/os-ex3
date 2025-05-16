@@ -48,6 +48,12 @@ struct JobContext {
     }
 };
 
+// check equality if there isnt an operator== defined
+auto keysEqual = [](const K2* a, const K2* b){
+    return !(*a < *b) && !(*b < *a);
+};
+
+
 /**
  * Emits an intermediate key-value pair (K2, V2) during the map phase.
  *
@@ -124,9 +130,9 @@ void shufflePhase(JobContext* ctx) {
     IntermediateVec group;
     for (int t = 0; t < ctx->numThreads; ++t) {
       auto& vec = ctx->intermediates[t];
-      while (!vec.empty() && *vec.back().first == *currentKey) {
-        group.push_back(vec.back());
-        vec.pop_back();
+      while (!vec.empty() && keysEqual(vec.back().first, currentKey)) {
+          group.push_back(vec.back());
+          vec.pop_back();
       }
     }
 
