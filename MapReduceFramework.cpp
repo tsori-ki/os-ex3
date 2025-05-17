@@ -91,7 +91,7 @@ void mapPhase(JobContext* jobContext, int threadID) {
 
         // Call the map function
         client.map(inputVec[inputIndex].first, inputVec[inputIndex].second, &intermediateVec);
-        JobContext->jobState.fetch_add(1ULL << 2, std::memory_order_acq_rel);
+        jobContext->jobState.fetch_add(1ULL << 2, std::memory_order_acq_rel);
         // Increment the progress counter
     }
 }
@@ -239,7 +239,7 @@ JobHandle startMapReduceJob(const MapReduceClient& client, const InputVec& input
                              "JobContext\n");
         std::exit(1);
       }
-      JobContext->jobState.store(
+      jobContext->jobState.store(
           (uint64_t)(MAP_STAGE) |
           ((uint64_t)inputVec.size() << 33) | // Set the total number of tasks
           ((uint64_t)0 << 2)); // Set the initial progress to 0
@@ -258,7 +258,7 @@ JobHandle startMapReduceJob(const MapReduceClient& client, const InputVec& input
 
             // Only thread 0 performs the shuffle phase
             if (i == 0) {
-              unit_64_t totalPairs = 0;
+              unit64_t totalPairs = 0;
               for (int j = 0; j < jobContext->numThreads; ++j) {
                 totalPairs += jobContext->intermediates[j].size();
               }
@@ -267,6 +267,7 @@ JobHandle startMapReduceJob(const MapReduceClient& client, const InputVec& input
                   ((uint64_t)totalPairs << 33) | // Set the total number of tasks
                   ((uint64_t)0 << 2), std::memory_order_release); // Set the
                   // initial progress to 0
+
               shufflePhase(jobContext);
 
                 jobContext->jobState.store(
