@@ -10,11 +10,8 @@
 #include <queue>
 #include <algorithm>
 
-
-
 // Define constants or macros if needed
 #define UNDEFINED_PERCENTAGE -1.0f
-
 
 struct JobContext {
     // — Client & data pointers —
@@ -69,7 +66,6 @@ auto keysEqual = [](const K2* a, const K2* b){
     return !(*a < *b) && !(*b < *a);
 };
 
-
 /**
  * Emits an intermediate key-value pair (K2, V2) during the map phase.
  *
@@ -82,7 +78,6 @@ auto keysEqual = [](const K2* a, const K2* b){
  * @param context Context object for the MapReduce job, which manages thread-local storage
  *                for intermediate key-value pairs.
  */
-
 void mapPhase(JobContext* jobContext, int threadID) {
     auto& client = jobContext->client;
     auto& inputVec = *jobContext->inputVec;
@@ -97,6 +92,8 @@ void mapPhase(JobContext* jobContext, int threadID) {
 
         // Call the map function
         client.map(inputVec[inputIndex].first, inputVec[inputIndex].second, &intermediateVec);
+        JobContext->jobState.fetch_add(1ULL >>> 2, std::memory_order_acq_rell);
+        // Increment the progress counter
     }
 }
 
@@ -125,8 +122,6 @@ void sortPhase(JobContext* jobContext, int threadID) {
     // Barrier synchronization to enter shuffle phase
     jobContext->mapSortBarrier.barrier();
 }
-
-
 
 void shufflePhase(JobContext* JobContext) {
   // 1) Keep going until all per-thread vectors are drained
@@ -162,10 +157,9 @@ void shufflePhase(JobContext* JobContext) {
     JobContext->queueSize.fetch_add(1);  // your atomic counter for number of groups
   }
 
-  // 2) Signal “no more groups”  
+  // 2) Signal “no more groups”
   JobContext->shuffleDone.store(true, std::memory_order_release);
 }
-
 
 void reducePhase(JobContext* jobContext, int threadID) {
     auto& client = jobContext->client;
@@ -243,6 +237,10 @@ JobHandle startMapReduceJob(const MapReduceClient& client, const InputVec& input
                              "JobContext\n");
         std::exit(1);
       }
+      JobContext->jobState.store(
+          (uint64_t)(MAP_STAGE) |
+          ((uint64_t)inputVec.size() << 33) | // Set the total number of tasks
+          ((uint64_t)0 << 2)); // Set the initial progress to 0
 
       for (int i = 0; i < multiThreadLevel; ++i) {
         try {
@@ -258,6 +256,9 @@ JobHandle startMapReduceJob(const MapReduceClient& client, const InputVec& input
 
             // Only thread 0 performs the shuffle phase
             if (i == 0) {
+              for (int j = 0; j < jobContext->numThreads; ++j) {
+                jobContext->jobState.fetch_add(1ULL << 2, std::memory_order_acq_rel);
+              }
               shufflePhase(jobContext);
             }
 
@@ -273,7 +274,6 @@ JobHandle startMapReduceJob(const MapReduceClient& client, const InputVec& input
       }
       return jobContext;
     }
-
 
 /**
  * Waits for the MapReduce job to complete.
