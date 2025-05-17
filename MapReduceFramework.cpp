@@ -60,7 +60,6 @@ struct JobContext {
     }
 };
 
-// check equality if there isnt an operator== defined
 auto keysEqual = [](const K2* a, const K2* b){
     return !(*a < *b) && !(*b < *a);
 };
@@ -78,6 +77,7 @@ auto keysEqual = [](const K2* a, const K2* b){
  *                for intermediate key-value pairs.
  */
 void mapPhase(JobContext* jobContext, int threadID) {
+    jobContext->JobState.fetch_or((unit64_t)MAP_STAGE, std::memory_order_release);
     auto& client = jobContext->client;
     auto& inputVec = *jobContext->inputVec;
     auto& intermediateVec = jobContext->intermediates[threadID];
@@ -150,12 +150,13 @@ void shufflePhase(JobContext* jobContext) {
     }
 
     // 1c) Push that group onto the shared queue
-
-  std::lock_guard<std::mutex> lg(jobContext->shuffleMutex); 
-  jobContext->shuffleQueue.push(std::move(group));
-    // 1d) Update the progress counter
-
-   jobContext->jobState.fetch_add(1ULL << 2, std::memory_order_acq_rel); // increment the progress counter
+    {
+      std::lock_guard <std::mutex> lg (jobContext->shuffleMutex);
+      jobContext->shuffleQueue.push (std::move (group));
+      // 1d) Update the progress counter
+    }
+   jobContext->jobState.fetch_add(static_cast<uint64_t>(group.size())<<2, std::memory_order_acq_rel); // increment the progress counter
+    // 1e) Update the queue size
 
    jobContext->queueSize.fetch_add(1);  // your atomic counter for number of groups
   }
@@ -170,24 +171,29 @@ void reducePhase(JobContext* jobContext, int threadID) {
     auto& shuffleQueue = jobContext->shuffleQueue;
 
     while (true) {
-        IntermediateVec group;
-
         // Lock the mutex to safely access the shuffle queue
-        {
-            std::lock_guard<std::mutex> lg(jobContext->shuffleMutex);
-            if (shuffleQueue.empty() && jobContext->shuffleDone.load()) {
-                break; // No more groups to process
-            }
-            if (!shuffleQueue.empty()) {
-                group = std::move(shuffleQueue.front());
-                shuffleQueue.pop();
-            }
-        }
+
+          if (jobContext->queueSize.load (std::memory_order_acquire) == 0) {
+              if (jobContext->shuffleDone.load(std::memory_order_acquire)) {
+                  break; // No more groups to process
+              }
+            continue;
+          }
+        IntermediateVec group;
+      {
+        std::lock_guard<std::mutex> lg(jobContext->shuffleMutex);
+        if (!shuffleQueue.empty()) {
+              group = std::move(shuffleQueue.front());
+              shuffleQueue.pop();
+              jobContext->queueSize.fetch_sub(1,std::memory_order_acq_rel); // Decrement the
+              // queue size
+          }
+      }
 
         // If we have a group, call the reduce function
         if (!group.empty()) {
             client.reduce(&group, jobContext);
-            jobContext->jobState.fetch_add(1ULL << 2, std::memory_order_acq_rel); // increment the progress counter
+            jobContext->jobState.fetch_add(static_cast<uint64_t>(group.size())<<2, std::memory_order_acq_rel); // increment the progress counter
         }
     }
 }
@@ -244,7 +250,7 @@ JobHandle startMapReduceJob(const MapReduceClient& client, const InputVec& input
         std::exit(1);
       }
      jobContext->jobState.store(
-          (uint64_t)(MAP_STAGE) |
+
           ((uint64_t)inputVec.size() << 33) | // Set the total number of tasks
           ((uint64_t)0 << 2)); // Set the initial progress to 0
 
@@ -371,7 +377,7 @@ void closeJobHandle(JobHandle job)
     if (!jobContext) {
       std::fprintf(stderr, "system error: invalid job handle\n");
       std::exit (1);    }
-
+    waitForJob (job)
     // Clean up the job context
     delete jobContext;
 }
