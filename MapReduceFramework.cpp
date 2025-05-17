@@ -91,7 +91,7 @@ void mapPhase(JobContext* jobContext, int threadID) {
 
         // Call the map function
         client.map(inputVec[inputIndex].first, inputVec[inputIndex].second, &intermediateVec);
-        jobContext->jobState.fetch_add(1ULL << 2, std::memory_order_acq_rel);
+       jobContext->jobState.fetch_add(1ULL << 2, std::memory_order_acq_rel);
         // Increment the progress counter
     }
 }
@@ -127,8 +127,9 @@ void shufflePhase(JobContext* JobContext) {
   while (true) {
     // 1a) Find the next key to process:
     K2* currentKey = nullptr;
-    for (int t = 0; t < JobContext->numThreads; ++t) {
-      auto& vec = JobContext->intermediates[t];
+    for (int t = 0; t < jobContext->numThreads; ++t)
+    {
+      auto& vec = jobContext->intermediates[t];
       if (!vec.empty()) {
         K2* candidate = vec.back().first;
         if (!currentKey || *candidate < *currentKey) {
@@ -140,8 +141,8 @@ void shufflePhase(JobContext* JobContext) {
 
     // 1b) Peel off _all_ pairs == currentKey from each thread’s vector
     IntermediateVec group;
-    for (int t = 0; t < JobContext->numThreads; ++t) {
-      auto& vec = JobContext->intermediates[t];
+    for (int t = 0; t < jobContext->numThreads; ++t) {
+      auto& vec = jobContext->intermediates[t];
       while (!vec.empty() && keysEqual(vec.back().first, currentKey)) {
           group.push_back(vec.back());
           vec.pop_back();
@@ -150,16 +151,16 @@ void shufflePhase(JobContext* JobContext) {
 
     // 1c) Push that group onto the shared queue
 
-    std::lock_guard<std::mutex> lg(JobContext->shuffleMutex);
-    JobContext->shuffleQueue.push(std::move(group));
+    std::lock_guard<std::mutex> lg jobContext->shuffleMutex);
+   jobContext->shuffleQueue.push(std::move(group));
 
-    JobContext->jobState.fetch_add(1ULL << 2, std::memory_order_acq_rel); // increment the progress counter
+   jobContext->jobState.fetch_add(1ULL << 2, std::memory_order_acq_rel); // increment the progress counter
 
-    JobContext->queueSize.fetch_add(1);  // your atomic counter for number of groups
+   jobContext->queueSize.fetch_add(1);  // your atomic counter for number of groups
   }
 
   // 2) Signal “no more groups”
-  JobContext->shuffleDone.store(true, std::memory_order_release);
+ jobContext->shuffleDone.store(true, std::memory_order_release);
 }
 
 void reducePhase(JobContext* jobContext, int threadID) {
@@ -239,7 +240,7 @@ JobHandle startMapReduceJob(const MapReduceClient& client, const InputVec& input
                              "JobContext\n");
         std::exit(1);
       }
-      jobContext->jobState.store(
+     jobContext->jobState.store(
           (uint64_t)(MAP_STAGE) |
           ((uint64_t)inputVec.size() << 33) | // Set the total number of tasks
           ((uint64_t)0 << 2)); // Set the initial progress to 0
@@ -258,7 +259,7 @@ JobHandle startMapReduceJob(const MapReduceClient& client, const InputVec& input
 
             // Only thread 0 performs the shuffle phase
             if (i == 0) {
-              unit64_t totalPairs = 0;
+              unit_64_t totalPairs = 0;
               for (int j = 0; j < jobContext->numThreads; ++j) {
                 totalPairs += jobContext->intermediates[j].size();
               }
@@ -267,7 +268,6 @@ JobHandle startMapReduceJob(const MapReduceClient& client, const InputVec& input
                   ((uint64_t)totalPairs << 33) | // Set the total number of tasks
                   ((uint64_t)0 << 2), std::memory_order_release); // Set the
                   // initial progress to 0
-
               shufflePhase(jobContext);
 
                 jobContext->jobState.store(
