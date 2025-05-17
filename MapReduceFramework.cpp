@@ -12,55 +12,65 @@
 // Define constants or macros if needed
 #define UNDEFINED_PERCENTAGE -1.0f
 
-struct JobContext {
+struct JobContext
+{
     // — Client & data pointers —
-    const MapReduceClient& client;   // to call map() and reduce()
-    const InputVec* inputVec;        // pointer to the user’s input [(K1*,V1*)…]
-    OutputVec* outputVec;            // pointer to the global output [(K3*,V3*)…]
+    const MapReduceClient &client;   // to call map() and reduce()
+    const InputVec *inputVec;        // pointer to the user’s input [(K1*,V1*)…]
+    OutputVec *outputVec;            // pointer to the global output [(K3*,V3*)…]
     const int numThreads;            // # of worker threads to spawn
 
     // — Thread management —
-    std::vector<std::thread> workers;    // the actual thread objects
+    std::vector <std::thread> workers;    // the actual thread objects
 
     // — Thread-specific data —
-    std::vector<IntermediateVec> intermediates; // One intermediate vector per thread
+    std::vector <IntermediateVec> intermediates; // One intermediate vector per thread
 
     // — Input-claiming counter (map) —
-    std::atomic<size_t> nextInputIndex{0};
+    std::atomic <size_t> nextInputIndex{0};
 
     // — Shuffle-phase queue & coordination —
     std::mutex shuffleMutex;
-    std::queue<IntermediateVec> shuffleQueue;
-    std::atomic<uint64_t> queueSize{0}; // Number of groups in the shuffle queue
+    std::queue <IntermediateVec> shuffleQueue;
+    std::atomic <uint64_t> queueSize{
+        0}; // Number of groups in the shuffle queue
     std::atomic<bool> shuffleDone{false};
 
     // — Job state & progress counters —
-    std::atomic<uint64_t> jobState{0};
+    std::atomic <uint64_t> job
+    State{ 0 };
 
     // — Barrier for synchronization —
     Barrier mapSortBarrier;
 
-    JobContext(const MapReduceClient& client, const InputVec& inputVec, OutputVec& outputVec, int numThreads)
-        : client(client), inputVec(&inputVec), outputVec(&outputVec), numThreads(numThreads),
-          intermediates(numThreads), mapSortBarrier(numThreads) {
+    JobContext (const MapReduceClient &client, const InputVec &inputVec, OutputVec &outputVec, int numThreads)
+        : client (client), inputVec (&inputVec), outputVec (&outputVec), numThreads (numThreads),
+          intermediates (numThreads), mapSortBarrier (numThreads)
+    {
     }
 
     // Static function to calculate the total number of tasks (bits 33–63)
-    static uint32_t calculateTotal(uint64_t jobState) {
-      return static_cast<uint32_t>((jobState >> 33) & 0x1FFFFFFF); // Mask for 31 bits
+    static uint32_t calculateTotal (uint64_t jobState)
+    {
+      return static_cast<uint32_t>((jobState >> 33)
+                                   & 0x1FFFFFFF); // Mask for 31 bits
     }
 
     // Static function to calculate the number of completed tasks (bits 2–32)
-    static uint32_t calculateProgress(uint64_t jobState) {
-      return static_cast<uint32_t>((jobState >> 2) & 0x1FFFFFFF); // Mask for 30 bits
+    static uint32_t calculateProgress (uint64_t jobState)
+    {
+      return static_cast<uint32_t>((jobState >> 2)
+                                   & 0x1FFFFFFF); // Mask for 30 bits
     }
     // Static function to calculate the current stage (bits 0–1)
-    static stage_t calculateStage(uint64_t jobState) {
+    static stage_t calculateStage (uint64_t jobState)
+    {
       return static_cast<stage_t>(jobState & 0x3); // Mask for 2 bits
     }
 };
 
-auto keysEqual = [](const K2* a, const K2* b){
+auto keysEqual = [] (const K2 *a, const K2 *b)
+{
     return !(*a < *b) && !(*b < *a);
 };
 
@@ -76,63 +86,74 @@ auto keysEqual = [](const K2* a, const K2* b){
  * @param context Context object for the MapReduce job, which manages thread-local storage
  *                for intermediate key-value pairs.
  */
-void mapPhase(JobContext* jobContext, int threadID) {
-    jobContext->JobState.fetch_or((unit64_t)MAP_STAGE, std::memory_order_release);
-    auto& client = jobContext->client;
-    auto& inputVec = *jobContext->inputVec;
-    auto& intermediateVec = jobContext->intermediates[threadID];
+void mapPhase (JobContext *jobContext, int threadID)
+{
+  jobContext->jobState.fetch_or ((unit64_t) MAP_STAGE,
+                                 std::memory_order_release);
+  auto &client = jobContext->client;
+  auto &inputVec = *jobContext->inputVec;
+  auto &intermediateVec = jobContext->intermediates[threadID];
 
-    for (size_t i = 0; i < inputVec.size(); ++i) {
-        // Claim the next input index
-        size_t inputIndex = jobContext->nextInputIndex.fetch_add(1);
-        if (inputIndex >= inputVec.size()) {
-            break; // No more inputs to process
-        }
-
-        // Call the map function
-        client.map(inputVec[inputIndex].first, inputVec[inputIndex].second, &intermediateVec);
-        jobContext->jobState.fetch_add(1ULL << 2, std::memory_order_acq_rel);
-        // Increment the progress counter
+  for (size_t i = 0; i < inputVec.size (); ++i)
+  {
+    // Claim the next input index
+    size_t inputIndex = jobContext->nextInputIndex.fetch_add (1);
+    if (inputIndex >= inputVec.size ())
+    {
+      break; // No more inputs to process
     }
+
+    // Call the map function
+    client.map (inputVec[inputIndex].first, inputVec[inputIndex].second, &intermediateVec);
+  }
 }
 
-void emit2(K2* key, V2* value, void* context)
+void emit2 (K2 *key, V2 *value, void *context)
 {
   // Cast the context to an IntermediateVec pointer
-  auto intermediateVec = static_cast<IntermediateVec*>(context);
-  if (!intermediateVec) {
-    std::fprintf(stderr, "system error: invalid emut2 context\n");
+  auto intermediateVec = static_cast<IntermediateVec *>(context);
+  if (!intermediateVec)
+  {
+    std::fprintf (stderr, "system error: invalid emut2 context\n");
     std::exit (1);
   }
 
   // Add the key-value pair to the intermediate vector
-  intermediateVec->emplace_back(key, value);
+  intermediateVec->emplace_back (key, value);
+  jobContext->jobState.fetch_add (1ULL << 2, std::memory_order_acq_rel);
+  // Increment the progress counter
 }
 
-void sortPhase(JobContext* jobContext, int threadID) {
-    auto& intermediateVec = jobContext->intermediates[threadID];
+void sortPhase (JobContext *jobContext, int threadID)
+{
+  auto &intermediateVec = jobContext->intermediates[threadID];
 
-    // Sort the intermediate vector
-    std::sort(intermediateVec.begin(), intermediateVec.end(),
-              [](const IntermediatePair& a, const IntermediatePair& b) {
-                  return *(a.first) < *(b.first);
-              });
+  // Sort the intermediate vector
+  std::sort (intermediateVec.begin (), intermediateVec.end (),
+             [] (const IntermediatePair &a, const IntermediatePair &b)
+             {
+                 return *(a.first) < *(b.first);
+             });
 
-    // Barrier synchronization to enter shuffle phase
-    jobContext->mapSortBarrier.barrier();
+  // Barrier synchronization to enter shuffle phase
+  jobContext->mapSortBarrier.barrier ();
 }
 
-void shufflePhase(JobContext* jobContext) {
+void shufflePhase (JobContext *jobContext)
+{
   // 1) Keep going until all per-thread vectors are drained
-  while (true) {
+  while (true)
+  {
     // 1a) Find the next key to process:
-    K2* currentKey = nullptr;
+    K2 *currentKey = nullptr;
     for (int t = 0; t < jobContext->numThreads; ++t)
     {
-      auto& vec = jobContext->intermediates[t];
-      if (!vec.empty()) {
-        K2* candidate = vec.back().first;
-        if (!currentKey || *candidate < *currentKey) {
+      auto &vec = jobContext->intermediates[t];
+      if (!vec.empty ())
+      {
+        K2 *candidate = vec.back ().first;
+        if (!currentKey || *candidate < *currentKey)
+        {
           currentKey = candidate;
         }
       }
@@ -141,11 +162,13 @@ void shufflePhase(JobContext* jobContext) {
 
     // 1b) Peel off _all_ pairs == currentKey from each thread’s vector
     IntermediateVec group;
-    for (int t = 0; t < jobContext->numThreads; ++t) {
-      auto& vec = jobContext->intermediates[t];
-      while (!vec.empty() && keysEqual(vec.back().first, currentKey)) {
-          group.push_back(vec.back());
-          vec.pop_back();
+    for (int t = 0; t < jobContext->numThreads; ++t)
+    {
+      auto &vec = jobContext->intermediates[t];
+      while (!vec.empty () && keysEqual (vec.back ().first, currentKey))
+      {
+        group.push_back (vec.back ());
+        vec.pop_back ();
       }
     }
 
@@ -155,47 +178,53 @@ void shufflePhase(JobContext* jobContext) {
       jobContext->shuffleQueue.push (std::move (group));
       // 1d) Update the progress counter
     }
-   jobContext->jobState.fetch_add(static_cast<uint64_t>(group.size())<<2, std::memory_order_acq_rel); // increment the progress counter
+    jobContext->jobState.fetch_add (static_cast<uint64_t>(group.size ())
+                                        << 2, std::memory_order_acq_rel); // increment the progress counter
     // 1e) Update the queue size
 
-   jobContext->queueSize.fetch_add(1);  // your atomic counter for number of groups
+    jobContext->queueSize.fetch_add (1);  // your atomic counter for number of groups
   }
 
   // 2) Signal “no more groups”
- jobContext->shuffleDone.store(true, std::memory_order_release);
+  jobContext->shuffleDone.store (true, std::memory_order_release);
 }
 
-void reducePhase(JobContext* jobContext, int threadID) {
-    auto& client = jobContext->client;
-    auto& outputVec = *jobContext->outputVec;
-    auto& shuffleQueue = jobContext->shuffleQueue;
+void reducePhase (JobContext *jobContext, int threadID)
+{
+  auto &client = jobContext->client;
+  auto &outputVec = *jobContext->outputVec;
+  auto &shuffleQueue = jobContext->shuffleQueue;
 
-    while (true) {
-        // Lock the mutex to safely access the shuffle queue
+  while (true)
+  {
+    // Lock the mutex to safely access the shuffle queue
 
-          if (jobContext->queueSize.load (std::memory_order_acquire) == 0) {
-              if (jobContext->shuffleDone.load(std::memory_order_acquire)) {
-                  break; // No more groups to process
-              }
-            continue;
-          }
-        IntermediateVec group;
+    if (jobContext->queueSize.load (std::memory_order_acquire) == 0)
+    {
+      if (jobContext->shuffleDone.load (std::memory_order_acquire))
       {
-        std::lock_guard<std::mutex> lg(jobContext->shuffleMutex);
-        if (!shuffleQueue.empty()) {
-              group = std::move(shuffleQueue.front());
-              shuffleQueue.pop();
-              jobContext->queueSize.fetch_sub(1,std::memory_order_acq_rel); // Decrement the
-              // queue size
-          }
+        break; // No more groups to process
       }
-
-        // If we have a group, call the reduce function
-        if (!group.empty()) {
-            client.reduce(&group, jobContext);
-            jobContext->jobState.fetch_add(static_cast<uint64_t>(group.size())<<2, std::memory_order_acq_rel); // increment the progress counter
-        }
+      continue;
     }
+    IntermediateVec group;
+    {
+      std::lock_guard <std::mutex> lg (jobContext->shuffleMutex);
+      if (!shuffleQueue.empty ())
+      {
+        group = std::move (shuffleQueue.front ());
+        shuffleQueue.pop ();
+        jobContext->queueSize.fetch_sub (1, std::memory_order_acq_rel); // Decrement the
+        // queue size
+      }
+    }
+
+    // If we have a group, call the reduce function
+    if (!group.empty ())
+    {
+      client.reduce (&group, jobContext);
+    }
+  }
 }
 /**
  * Emits a final key-value pair (K3, V3) during the reduce phase.
@@ -209,19 +238,21 @@ void reducePhase(JobContext* jobContext, int threadID) {
  * @param context Context object for the MapReduce job, which manages the output vector
  *                for final key-value pairs.
  */
-void emit3(K3* key, V3* value, void* context)
+void emit3 (K3 *key, V3 *value, void *context)
 {
-    // Cast the context to an OutputVec pointer
-    auto jobContext = static_cast<JobContext*>(context);
-    if (!jobContext) {
-        std::fprintf(stderr, "system error: invalid emit3 context\n");
-        std::exit (1);
-    }
+  // Cast the context to an OutputVec pointer
+  auto jobContext = static_cast<JobContext *>(context);
+  if (!jobContext)
+  {
+    std::fprintf (stderr, "system error: invalid emit3 context\n");
+    std::exit (1);
+  }
 
-    // Add the key-value pair to the output vector
-    std::lock_guard<std::mutex> lg(jobContext->mutex); // Ensure thread-safe access
-    // to outputVec
-    jobContext->outputVec->emplace_back(key, value);
+  // Add the key-value pair to the output vector
+  std::lock_guard <std::mutex> lg (jobContext->mutex); // Ensure thread-safe access
+  // to outputVec
+  jobContext->outputVec->emplace_back (key, value);
+  jobContext->jobState.fetch_add (1ULL << 2, std::memory_order_acq_rel);
 }
 
 /**
@@ -241,63 +272,77 @@ void emit3(K3* key, V3* value, void* context)
  *                         of parallelism for the map and reduce phases.
  * @return A handle to the MapReduce job, which can be used with other job-related functions.
  */
-JobHandle startMapReduceJob(const MapReduceClient& client, const InputVec& inputVec, OutputVec& outputVec, int multiThreadLevel)
+JobHandle
+startMapReduceJob (const MapReduceClient &client, const InputVec &inputVec, OutputVec &outputVec, int multiThreadLevel)
+{
+  auto jobContext = new (std::nothrow) JobContext (client, inputVec, outputVec, multiThreadLevel);
+  if (!jobContext)
+  {
+    std::fprintf (stderr, "system error: Failed to allocate memory for "
+                          "JobContext\n");
+    std::exit (1);
+  }
+  jobContext->jobState.store (
+
+      ((uint64_t) inputVec.size () << 33) | // Set the total number of tasks
+      ((uint64_t) 0 << 2)); // Set the initial progress to 0
+
+  for (int i = 0; i < multiThreadLevel; ++i)
+  {
+    try
     {
-      auto jobContext = new (std::nothrow) JobContext(client, inputVec, outputVec, multiThreadLevel);
-      if (!jobContext) {
-        std::fprintf(stderr, "system error: Failed to allocate memory for "
-                             "JobContext\n");
-        std::exit(1);
-      }
-     jobContext->jobState.store(
+      jobContext->workers.emplace_back ([jobContext, i] ()
+                                        {
+                                            // Map phase
+                                            mapPhase (jobContext, i);
 
-          ((uint64_t)inputVec.size() << 33) | // Set the total number of tasks
-          ((uint64_t)0 << 2)); // Set the initial progress to 0
+                                            // Sort phase
+                                            sortPhase (jobContext, i);
 
-      for (int i = 0; i < multiThreadLevel; ++i) {
-        try {
-          jobContext->workers.emplace_back([jobContext, i]() {
-            // Map phase
-            mapPhase(jobContext, i);
+                                            // Barrier synchronization to enter shuffle phase
+                                            jobContext->mapSortBarrier.barrier ();
 
-            // Sort phase
-            sortPhase(jobContext, i);
+                                            // Only thread 0 performs the shuffle phase
+                                            if (i == 0)
+                                            {
+                                              unit64_t totalPairs = 0;
+                                              for (int j = 0; j
+                                                              < jobContext->numThreads; ++j)
+                                              {
+                                                totalPairs += jobContext->intermediates[j].size ();
+                                              }
+                                              jobContext->jobState.store (
+                                                  (uint64_t) (SHUFFLE_STAGE) |
+                                                  ((uint64_t) totalPairs << 33)
+                                                  | // Set the total number of tasks
+                                                  ((uint64_t) 0
+                                                      << 2), std::memory_order_release); // Set the
+                                              // initial progress to 0
+                                              shufflePhase (jobContext);
 
-            // Barrier synchronization to enter shuffle phase
-            jobContext->mapSortBarrier.barrier();
+                                              jobContext->jobState.store (
+                                                  (uint64_t) (REDUCE_STAGE) |
+                                                  ((uint64_t) totalPairs << 33)
+                                                  | // Set the total number of tasks
+                                                  ((uint64_t) 0
+                                                      << 2), std::memory_order_release); // Set the
+                                              // initial progress to 0
+                                            }
 
-            // Only thread 0 performs the shuffle phase
-            if (i == 0) {
-              unit64_t totalPairs = 0;
-              for (int j = 0; j < jobContext->numThreads; ++j) {
-                totalPairs += jobContext->intermediates[j].size();
-              }
-              jobContext->jobState.store(
-                  (uint64_t)(SHUFFLE_STAGE) |
-                  ((uint64_t)totalPairs << 33) | // Set the total number of tasks
-                  ((uint64_t)0 << 2), std::memory_order_release); // Set the
-                  // initial progress to 0
-              shufflePhase(jobContext);
-
-                jobContext->jobState.store(
-                    (uint64_t)(REDUCE_STAGE) |
-                    ((uint64_t)totalPairs << 33) | // Set the total number of tasks
-                    ((uint64_t)0 << 2), std::memory_order_release); // Set the
-                    // initial progress to 0
-            }
-
-            // Reduce phase
-            reducePhase(jobContext, i);
-          });
-        } catch (const std::system_error& e) {
-          delete jobContext;
-          std::fprintf(stderr, "system error: Failed to allocate memory for thread: %s\n",
-                       e.what());
-          std::exit(1);
-        }
-      }
-      return jobContext;
+                                            // Reduce phase
+                                            reducePhase (jobContext, i);
+                                        });
     }
+    catch (const std::system_error &e)
+    {
+      delete jobContext;
+      std::fprintf (stderr, "system error: Failed to allocate memory for thread: %s\n",
+                    e.what ());
+      std::exit (1);
+    }
+  }
+  return jobContext;
+}
 
 /**
  * Waits for the MapReduce job to complete.
@@ -309,21 +354,24 @@ JobHandle startMapReduceJob(const MapReduceClient& client, const InputVec& input
  * @param job Handle to the MapReduce job. The handle must have been obtained from
  *            `startMapReduceJob`.
  */
-void waitForJob(JobHandle job)
+void waitForJob (JobHandle job)
 {
-    auto jobContext = static_cast<JobContext*>(job);
-    if (!jobContext) {
-      std::fprintf(stderr, "system error: invalid job handle\n");
-      std::exit (1);
+  auto jobContext = static_cast<JobContext *>(job);
+  if (!jobContext)
+  {
+    std::fprintf (stderr, "system error: invalid job handle\n");
+    std::exit (1);
 
-    }
+  }
 
-    // Wait for all worker threads to finish
-    for (auto& worker : jobContext->workers) {
-        if (worker.joinable()) {
-            worker.join();
-        }
+  // Wait for all worker threads to finish
+  for (auto &worker: jobContext->workers)
+  {
+    if (worker.joinable ())
+    {
+      worker.join ();
     }
+  }
 }
 
 /**
@@ -338,27 +386,35 @@ void waitForJob(JobHandle job)
  * @param state Pointer to a `JobState` structure, which will be populated with the
  *              current stage and progress percentage of the job.
  */
-void getJobState(JobHandle job, JobState* state)
+void getJobState (JobHandle job, JobState *state)
 {
-    auto jobContext = static_cast<JobContext*>(job);
-    if (!jobContext) {
-      std::fprintf(stderr, "system error: invalid job handle\n");
-      std::exit (1);    }
-    if (!state) {
-      std::fprintf(stderr, "system error: invalid job state pointer\n");
-      std::exit (1);    }
+  auto jobContext = static_cast<JobContext *>(job);
+  if (!jobContext)
+  {
+    std::fprintf (stderr, "system error: invalid job handle\n");
+    std::exit (1);
+  }
+  if (!state)
+  {
+    std::fprintf (stderr, "system error: invalid job state pointer\n");
+    std::exit (1);
+  }
 
-    // Lock the mutex to safely access the job state
-    uint64_t atomicValue = jobContext->jobState.load();
-    uint32_t total = JobContext::calculateTotal(atomicValue);
-    uint32_t progress = JobContext::calculateProgress(atomicValue);
+  // Lock the mutex to safely access the job state
+  uint64_t atomicValue = jobContext->jobState.load ();
+  uint32_t total = JobContext::calculateTotal (atomicValue);
+  uint32_t progress = JobContext::calculateProgress (atomicValue);
 
-    if (total == 0) {
-        state->percentage = UNDEFINED_PERCENTAGE;
-    } else {
-        state->percentage = 100 * (static_cast<float>(progress) / static_cast<float>(total));
-    }
-    state->stage = JobContext::calculateStage(atomicValue);
+  if (total == 0)
+  {
+    state->percentage = UNDEFINED_PERCENTAGE;
+  }
+  else
+  {
+    state->percentage =
+        100 * (static_cast<float>(progress) / static_cast<float>(total));
+  }
+  state->stage = JobContext::calculateStage (atomicValue);
 }
 
 /**
@@ -371,13 +427,15 @@ void getJobState(JobHandle job, JobState* state)
  * @param job Handle to the MapReduce job. The handle must have been obtained from
  *            `startMapReduceJob`.
  */
-void closeJobHandle(JobHandle job)
+void closeJobHandle (JobHandle job)
 {
-    auto jobContext = static_cast<JobContext*>(job);
-    if (!jobContext) {
-      std::fprintf(stderr, "system error: invalid job handle\n");
-      std::exit (1);    }
-    waitForJob (job)
-    // Clean up the job context
-    delete jobContext;
+  auto jobContext = static_cast<JobContext *>(job);
+  if (!jobContext)
+  {
+    std::fprintf (stderr, "system error: invalid job handle\n");
+    std::exit (1);
+  }
+  waitForJob (job)
+  // Clean up the job context
+  delete jobContext;
 }
