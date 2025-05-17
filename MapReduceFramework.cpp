@@ -91,7 +91,7 @@ void mapPhase(JobContext* jobContext, int threadID) {
 
         // Call the map function
         client.map(inputVec[inputIndex].first, inputVec[inputIndex].second, &intermediateVec);
-       jobContext->jobState.fetch_add(1ULL << 2, std::memory_order_acq_rel);
+        jobContext->jobState.fetch_add(1ULL << 2, std::memory_order_acq_rel);
         // Increment the progress counter
     }
 }
@@ -101,7 +101,7 @@ void emit2(K2* key, V2* value, void* context)
   // Cast the context to an IntermediateVec pointer
   auto intermediateVec = static_cast<IntermediateVec*>(context);
   if (!intermediateVec) {
-    std::fprintf(stderr, "system error: invalid intermediate vector context\n");
+    std::fprintf(stderr, "system error: invalid emut2 context\n");
     std::exit (1);
   }
 
@@ -186,7 +186,7 @@ void reducePhase(JobContext* jobContext, int threadID) {
 
         // If we have a group, call the reduce function
         if (!group.empty()) {
-            client.reduce(&group, &outputVec);
+            client.reduce(&group, jobContext);
             jobContext->jobState.fetch_add(1ULL << 2, std::memory_order_acq_rel); // increment the progress counter
         }
     }
@@ -206,14 +206,16 @@ void reducePhase(JobContext* jobContext, int threadID) {
 void emit3(K3* key, V3* value, void* context)
 {
     // Cast the context to an OutputVec pointer
-    auto outputVec = static_cast<OutputVec*>(context);
-    if (!outputVec) {
-        std::fprintf(stderr, "system error: invalid output vector context\n");
+    auto jobContext = static_cast<JobContext*>(context);
+    if (!jobContext) {
+        std::fprintf(stderr, "system error: invalid emit3 context\n");
         std::exit (1);
     }
 
     // Add the key-value pair to the output vector
-    outputVec->emplace_back(key, value);
+    std::lock_guard<std::mutex> lg(jobContext->mutex); // Ensure thread-safe access
+    // to outputVec
+    jobContext->outputVec->emplace_back(key, value);
 }
 
 /**
