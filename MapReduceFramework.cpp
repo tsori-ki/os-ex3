@@ -150,10 +150,12 @@ void shufflePhase(JobContext* JobContext) {
     }
 
     // 1c) Push that group onto the shared queue
-    {
-      std::lock_guard<std::mutex> lg(JobContext->shuffleMutex);
-      JobContext->shuffleQueue.push(std::move(group));
-    }
+
+    std::lock_guard<std::mutex> lg(JobContext->shuffleMutex);
+    JobContext->shuffleQueue.push(std::move(group));
+
+    JobContext->jobState.fetch_add(1ULL << 2, std::memory_order_acq_rel); // increment the progress counter
+
     JobContext->queueSize.fetch_add(1);  // your atomic counter for number of groups
   }
 
@@ -184,6 +186,7 @@ void reducePhase(JobContext* jobContext, int threadID) {
         // If we have a group, call the reduce function
         if (!group.empty()) {
             client.reduce(&group, &outputVec);
+            JobContex->jobState.fetch_add(1ULL << 2, std::memory_order_acq_rel); // increment the progress counter
         }
     }
 }
@@ -256,10 +259,22 @@ JobHandle startMapReduceJob(const MapReduceClient& client, const InputVec& input
 
             // Only thread 0 performs the shuffle phase
             if (i == 0) {
+              unit_64_t totalPairs = 0;
               for (int j = 0; j < jobContext->numThreads; ++j) {
-                jobContext->jobState.fetch_add(1ULL << 2, std::memory_order_acq_rel);
+                totalPairs += jobContext->intermediates[j].size();
               }
+              JobContext->jobState.store(
+                  (uint64_t)(SHUFFLE_STAGE) |
+                  ((uint64_t)totalPairs << 33) | // Set the total number of tasks
+                  ((uint64_t)0 << 2), std::memory_order_release); // Set the
+                  // initial progress to 0
               shufflePhase(jobContext);
+
+                jobContext->jobState.store(
+                    (uint64_t)(REDUCE_STAGE) |
+                    ((uint64_t)totalPairs << 33) | // Set the total number of tasks
+                    ((uint64_t)0 << 2), std::memory_order_release); // Set the
+                    // initial progress to 0
             }
 
             // Reduce phase
