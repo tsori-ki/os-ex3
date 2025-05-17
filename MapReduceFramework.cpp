@@ -6,7 +6,6 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
-#include <iostream>
 #include <queue>
 #include <algorithm>
 
@@ -48,7 +47,7 @@ struct JobContext {
 
     // Static function to calculate the total number of tasks (bits 33–63)
     static uint32_t calculateTotal(uint64_t jobState) {
-      return static_cast<uint32_t>((jobState >> 33) & 0x1FFFFFFFF); // Mask for 31 bits
+      return static_cast<uint32_t>((jobState >> 33) & 0x1FFFFFFF); // Mask for 31 bits
     }
 
     // Static function to calculate the number of completed tasks (bits 2–32)
@@ -92,7 +91,7 @@ void mapPhase(JobContext* jobContext, int threadID) {
 
         // Call the map function
         client.map(inputVec[inputIndex].first, inputVec[inputIndex].second, &intermediateVec);
-        JobContext->jobState.fetch_add(1ULL >>> 2, std::memory_order_acq_rell);
+        JobContext->jobState.fetch_add(1ULL << 2, std::memory_order_acq_rel);
         // Increment the progress counter
     }
 }
@@ -263,7 +262,7 @@ JobHandle startMapReduceJob(const MapReduceClient& client, const InputVec& input
               for (int j = 0; j < jobContext->numThreads; ++j) {
                 totalPairs += jobContext->intermediates[j].size();
               }
-              JobContext->jobState.store(
+              jobContext->jobState.store(
                   (uint64_t)(SHUFFLE_STAGE) |
                   ((uint64_t)totalPairs << 33) | // Set the total number of tasks
                   ((uint64_t)0 << 2), std::memory_order_release); // Set the
@@ -280,7 +279,7 @@ JobHandle startMapReduceJob(const MapReduceClient& client, const InputVec& input
             // Reduce phase
             reducePhase(jobContext, i);
           });
-        } catch (const std::exception& e) {
+        } catch (const std::system_error& e) {
           delete jobContext;
           std::fprintf(stderr, "system error: Failed to allocate memory for thread: %s\n",
                        e.what());
@@ -315,9 +314,6 @@ void waitForJob(JobHandle job)
             worker.join();
         }
     }
-
-    // Clean up the job context
-    delete jobContext;
 }
 
 /**
@@ -343,7 +339,6 @@ void getJobState(JobHandle job, JobState* state)
       std::exit (1);    }
 
     // Lock the mutex to safely access the job state
-    std::lock_guard<std::mutex> lock(jobContext->shuffleMutex);
     uint64_t atomicValue = jobContext->jobState.load();
     uint32_t total = JobContext::calculateTotal(atomicValue);
     uint32_t progress = JobContext::calculateProgress(atomicValue);
