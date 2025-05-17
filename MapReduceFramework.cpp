@@ -22,25 +22,25 @@ struct JobContext
     const int numThreads;            // # of worker threads to spawn
 
     // — Thread management —
-    std::vector <std::thread> workers;    // the actual thread objects
+    std::vector<std::thread> workers;    // the actual thread objects
 
     // — Thread-specific data —
-    std::vector <IntermediateVec> intermediates; // One intermediate vector per thread
+    std::vector<IntermediateVec> intermediates; // One intermediate vector per thread
 
     // — Input-claiming counter (map) —
-    std::atomic <size_t> nextInputIndex{0};
+    std::atomic<size_t> nextInputIndex{0};
 
     // — Shuffle-phase queue & coordination —
     std::mutex shuffleMutex;
-    std::queue <IntermediateVec> shuffleQueue;
-    std::atomic <uint64_t> queueSize{
+    std::queue<IntermediateVec> shuffleQueue;
+    std::atomic<uint64_t> queueSize{
         0}; // Number of groups in the shuffle queue
     std::atomic<bool> shuffleDone{false};
 
     std::mutex outputMutex; // Mutex for output vector
 
     // — Job state & progress counters —
-    std::atomic <uint64_t> jobState{ 0 };
+    std::atomic<uint64_t> jobState{0};
 
     // — Barrier for synchronization —
     Barrier mapSortBarrier;
@@ -177,7 +177,7 @@ void shufflePhase (JobContext *jobContext)
 
     // 1c) Push that group onto the shared queue
     {
-      std::lock_guard <std::mutex> lg (jobContext->shuffleMutex);
+      std::lock_guard<std::mutex> lg (jobContext->shuffleMutex);
       jobContext->shuffleQueue.push (std::move (group));
       // 1d) Update the progress counter
     }
@@ -211,7 +211,7 @@ void reducePhase (JobContext *jobContext)
     }
     IntermediateVec group;
     {
-      std::lock_guard <std::mutex> lg (jobContext->shuffleMutex);
+      std::lock_guard<std::mutex> lg (jobContext->shuffleMutex);
       if (!shuffleQueue.empty ())
       {
         group = std::move (shuffleQueue.front ());
@@ -226,7 +226,7 @@ void reducePhase (JobContext *jobContext)
     {
       client.reduce (&group, jobContext);
       jobContext->jobState.fetch_add (static_cast<uint64_t>(group.size ())
-      << 2, std::memory_order_acq_rel); // increment the progress counter
+                                          << 2, std::memory_order_acq_rel); // increment the progress counter
     }
   }
 }
@@ -253,7 +253,7 @@ void emit3 (K3 *key, V3 *value, void *context)
   }
 
   // Add the key-value pair to the output vector
-  std::lock_guard <std::mutex> lg (jobContext->outputMutex); // Ensure thread-safe access
+  std::lock_guard<std::mutex> lg (jobContext->outputMutex); // Ensure thread-safe access
   // to outputVec
   jobContext->outputVec->emplace_back (key, value);
 }
@@ -278,22 +278,23 @@ void emit3 (K3 *key, V3 *value, void *context)
 JobHandle
 startMapReduceJob (const MapReduceClient &client, const InputVec &inputVec, OutputVec &outputVec, int multiThreadLevel)
 {
-  auto jobContext = new (std::nothrow) JobContext (client, inputVec, outputVec, multiThreadLevel);
-  if (!jobContext)
+  try
   {
-    std::fprintf (stderr, "system error: Failed to allocate memory for "
-                          "JobContext\n");
-    std::exit (1);
-  }
-  jobContext->jobState.store (
-      (static_cast<uint64_t>(UNDEFINED_STAGE)) |
-      ((uint64_t) inputVec.size () << 33) | // Set the total number of tasks
-      ((uint64_t) 0 << 2)); // Set the initial progress to 0
-
-  for (int i = 0; i < multiThreadLevel; ++i)
-  {
-    try
+    auto jobContext = new JobContext (client, inputVec, outputVec, multiThreadLevel);
+    if (!jobContext)
     {
+      std::fprintf (stderr, "system error: Failed to allocate memory for "
+                            "JobContext\n");
+      std::exit (1);
+    }
+    jobContext->jobState.store (
+        (static_cast<uint64_t>(UNDEFINED_STAGE)) |
+        ((uint64_t) inputVec.size () << 33) | // Set the total number of tasks
+        ((uint64_t) 0 << 2)); // Set the initial progress to 0
+
+    for (int i = 0; i < multiThreadLevel; ++i)
+    {
+
       jobContext->workers.emplace_back ([jobContext, i] ()
                                         {
                                             // Map phase
@@ -336,14 +337,13 @@ startMapReduceJob (const MapReduceClient &client, const InputVec &inputVec, Outp
                                             reducePhase (jobContext);
                                         });
     }
-    catch (const std::system_error &e)
-    {
-      delete jobContext;
-      std::fprintf (stderr, "system error: Failed to allocate memory for thread: %s\n",
-                    e.what ());
-      delete jobContext;
-      std::exit (1);
-    }
+  }
+  catch (const std::system_error &e)
+  {
+    std::fprintf (stderr, "system error: Failed to allocate memory for thread: %s\n",
+                  e.what ());
+    delete jobContext;
+    std::exit (1);
   }
   return jobContext;
 }
