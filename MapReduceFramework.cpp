@@ -122,7 +122,7 @@ void sortPhase(JobContext* jobContext, int threadID) {
     jobContext->mapSortBarrier.barrier();
 }
 
-void shufflePhase(JobContext* JobContext) {
+void shufflePhase(JobContext* jobContext) {
   // 1) Keep going until all per-thread vectors are drained
   while (true) {
     // 1a) Find the next key to process:
@@ -151,8 +151,9 @@ void shufflePhase(JobContext* JobContext) {
 
     // 1c) Push that group onto the shared queue
 
-    std::lock_guard<std::mutex> lg jobContext->shuffleMutex);
-   jobContext->shuffleQueue.push(std::move(group));
+  std::lock_guard<std::mutex> lg(jobContext->shuffleMutex); 
+  jobContext->shuffleQueue.push(std::move(group));
+    // 1d) Update the progress counter
 
    jobContext->jobState.fetch_add(1ULL << 2, std::memory_order_acq_rel); // increment the progress counter
 
@@ -186,7 +187,7 @@ void reducePhase(JobContext* jobContext, int threadID) {
         // If we have a group, call the reduce function
         if (!group.empty()) {
             client.reduce(&group, &outputVec);
-            JobContex->jobState.fetch_add(1ULL << 2, std::memory_order_acq_rel); // increment the progress counter
+            jobContext->jobState.fetch_add(1ULL << 2, std::memory_order_acq_rel); // increment the progress counter
         }
     }
 }
@@ -259,7 +260,7 @@ JobHandle startMapReduceJob(const MapReduceClient& client, const InputVec& input
 
             // Only thread 0 performs the shuffle phase
             if (i == 0) {
-              unit_64_t totalPairs = 0;
+              unit64_t totalPairs = 0;
               for (int j = 0; j < jobContext->numThreads; ++j) {
                 totalPairs += jobContext->intermediates[j].size();
               }
