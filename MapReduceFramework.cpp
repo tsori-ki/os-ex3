@@ -118,7 +118,7 @@ void emit2 (K2 *key, V2 *value, void *context)
   auto intermediateVec = static_cast<IntermediateVec *>(context);
   if (!intermediateVec)
   {
-    std::fprintf (stderr, "system error: invalid emut2 context\n");
+    std::fprintf (stdout, "system error: invalid emut2 context\n");
     std::exit (1);
   }
 
@@ -180,13 +180,14 @@ void shufflePhase (JobContext *jobContext)
       std::lock_guard<std::mutex> lg (jobContext->shuffleMutex);
       jobContext->shuffleQueue.push (std::move (group));
       // 1d) Update the progress counter
-    }
-    jobContext->jobState.fetch_add (static_cast<uint64_t>(group.size ())
+          jobContext->jobState.fetch_add (static_cast<uint64_t>(group.size ())
                                         << 2, std::memory_order_acq_rel); // increment the progress counter
     // 1e) Update the queue size
 
     jobContext->queueSize.fetch_add (1);  // your atomic counter for number of groups
   }
+    }
+
 
   // 2) Signal “no more groups”
   jobContext->shuffleDone.store (true, std::memory_order_release);
@@ -248,7 +249,7 @@ void emit3 (K3 *key, V3 *value, void *context)
   auto jobContext = static_cast<JobContext *>(context);
   if (!jobContext)
   {
-    std::fprintf (stderr, "system error: invalid emit3 context\n");
+    std::fprintf (stdout, "system error: invalid emit3 context\n");
     std::exit (1);
   }
 
@@ -278,12 +279,10 @@ void emit3 (K3 *key, V3 *value, void *context)
 JobHandle
 startMapReduceJob (const MapReduceClient &client, const InputVec &inputVec, OutputVec &outputVec, int multiThreadLevel)
 {
-  try
-  {
     auto jobContext = new JobContext (client, inputVec, outputVec, multiThreadLevel);
     if (!jobContext)
     {
-      std::fprintf (stderr, "system error: Failed to allocate memory for "
+      std::fprintf (stdout, "system error: Failed to allocate memory for "
                             "JobContext\n");
       std::exit (1);
     }
@@ -291,7 +290,8 @@ startMapReduceJob (const MapReduceClient &client, const InputVec &inputVec, Outp
         (static_cast<uint64_t>(UNDEFINED_STAGE)) |
         ((uint64_t) inputVec.size () << 33) | // Set the total number of tasks
         ((uint64_t) 0 << 2)); // Set the initial progress to 0
-
+  try
+  {
     for (int i = 0; i < multiThreadLevel; ++i)
     {
 
@@ -302,9 +302,6 @@ startMapReduceJob (const MapReduceClient &client, const InputVec &inputVec, Outp
 
                                             // Sort phase
                                             sortPhase (jobContext, i);
-
-                                            // Barrier synchronization to enter shuffle phase
-                                            jobContext->mapSortBarrier.barrier ();
 
                                             // Only thread 0 performs the shuffle phase
                                             if (i == 0)
@@ -340,9 +337,8 @@ startMapReduceJob (const MapReduceClient &client, const InputVec &inputVec, Outp
   }
   catch (const std::system_error &e)
   {
-    std::fprintf (stderr, "system error: Failed to allocate memory for thread: %s\n",
+    std::fprintf (stdout, "system error: Failed to allocate memory for thread: %s\n",
                   e.what ());
-    delete jobContext;
     std::exit (1);
   }
   return jobContext;
@@ -363,7 +359,7 @@ void waitForJob (JobHandle job)
   auto jobContext = static_cast<JobContext *>(job);
   if (!jobContext)
   {
-    std::fprintf (stderr, "system error: invalid job handle\n");
+    std::fprintf (stdout, "system error: invalid job handle\n");
     std::exit (1);
 
   }
@@ -395,12 +391,12 @@ void getJobState (JobHandle job, JobState *state)
   auto jobContext = static_cast<JobContext *>(job);
   if (!jobContext)
   {
-    std::fprintf (stderr, "system error: invalid job handle\n");
+    std::fprintf (stdout, "system error: invalid job handle\n");
     std::exit (1);
   }
   if (!state)
   {
-    std::fprintf (stderr, "system error: invalid job state pointer\n");
+    std::fprintf (stdout, "system error: invalid job state pointer\n");
     std::exit (1);
   }
 
@@ -436,7 +432,7 @@ void closeJobHandle (JobHandle job)
   auto jobContext = static_cast<JobContext *>(job);
   if (!jobContext)
   {
-    std::fprintf (stderr, "system error: invalid job handle\n");
+    std::fprintf (stdout, "system error: invalid job handle\n");
     std::exit (1);
   }
   waitForJob (job);
