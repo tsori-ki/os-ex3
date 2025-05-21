@@ -9,7 +9,7 @@ INCS=-I.
 CFLAGS = -Wall -std=c++11 -g $(INCS)
 CXXFLAGS = -Wall -std=c++11 -g $(INCS)
 
-SRC = MapReduceFramework.cpp Barrier.cpp
+SRC = MapReduceFramework.cpp
 OBJ = $(SRC:.cpp=.o)
 LIB = libMapReduceFramework.a
 
@@ -27,8 +27,8 @@ $(LIB): $(OBJ)
 clean:
 	$(RM) $(OBJ) $(LIB) *~ core
 
-TARNAME := ex3.tar
-TARSRCS := MapReduceFramework.cpp Barrier.cpp Barrier.h Makefile README
+TARNAME = ex3.tar
+TARSRCS = $(SRC) Makefile README
 
 .PHONY: tar
 tar: clean all

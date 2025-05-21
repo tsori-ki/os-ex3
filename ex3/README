@@ -4,8 +4,6 @@ EX: 1
 
 FILES:
 MapReduceFramework.cpp -- our implementation of the library
-Barrier.cpp -- the provided Barrier class in the source files
-Barrier.h -- the provided Barrier header in the source files
 Makefile -- Makefile for building the program
 README -- this file
 
