@@ -10,7 +10,7 @@
 #include <cstdio>
 #include <system_error>
 #include <condition_variable> // For improved synchronization
-
+#include <iostream>
 // Define constants or macros if needed
 // #define UNDEFINED_PERCENTAGE -1.0f // Not strictly needed now
 
@@ -32,14 +32,14 @@ struct JobContext
     std::atomic<size_t> nextInputIndex{0};
 
     // --- Shuffle-phase queue & coordination ---
-    std::mutex shuffleMutex;
-    std::queue<IntermediateVec> shuffleQueue;
+//    std::mutex shuffleMutex;
+    std::vector<IntermediateVec> shuffleVec;
+//    std::queue<IntermediateVec> shuffleVec;
     std::atomic<uint64_t> queueSize{0};
-    std::atomic<bool> shuffleDone{false};
+//    std::atomic<bool> shuffleDone{false};
 
     // --- Reduce phase start synchronization ---
-    std::mutex reducePhaseStartMutex;
-    std::condition_variable reducePhaseStartCV;
+//    std::condition_variable reducePhaseStartCV;
 
     // --- Output vector mutex ---
     std::mutex outputMutex;
@@ -49,10 +49,11 @@ struct JobContext
 
     // --- Barrier for synchronization ---
     Barrier mapSortBarrier;
+    std::atomic<uint64_t> atomic_reduce;
 
     JobContext (const MapReduceClient &client_ref, const InputVec &inputVec_ref, OutputVec &outputVec_ref, int numThreads_ref)
         : client (client_ref), inputVec (&inputVec_ref), outputVec (&outputVec_ref), numThreads (numThreads_ref),
-          intermediates (numThreads_ref), mapSortBarrier (numThreads_ref) 
+          intermediates (numThreads_ref), mapSortBarrier (numThreads_ref), atomic_reduce(0)
     {
     }
 
@@ -159,10 +160,10 @@ void shufflePhase (JobContext *jobContext)
 
     // 1c) Push that group onto the shared queue
     {
-      std::lock_guard<std::mutex> lg (jobContext->shuffleMutex);
-      jobContext->shuffleQueue.push (std::move (group));
+//      std::lock_guard<std::mutex> lg (jobContext->shuffleMutex);
+      jobContext->shuffleVec.emplace_back(std::move (group));
       // 1d) Update the progress counter
-      jobContext->jobState.fetch_add (1ULL,std::memory_order_acq_rel); // increment the progress counter
+      jobContext->jobState.fetch_add (1ULL<<2,std::memory_order_acq_rel); // increment the progress counter
       // 1e) Update the queue size
 
       jobContext->queueSize.fetch_add (1);  // your atomic counter for number of groups
@@ -174,7 +175,7 @@ void shufflePhase (JobContext *jobContext)
   jobContext->jobState.store(newState, std::memory_order_release);
 
   // 2) Signal “no more groups”
-  jobContext->shuffleDone.store (true, std::memory_order_release);
+//  jobContext->shuffleDone.store (true, std::memory_order_release);
 }
 
 
@@ -185,33 +186,41 @@ void reducePhase (JobContext *ctx)
 {
   while (true)
   {
-    IntermediateVec group;
-    bool popped_group = false;
-
-    if (ctx->queueSize.load(std::memory_order_acquire) == 0) {
-      if (ctx->shuffleDone.load(std::memory_order_acquire)) {
-        break; 
+      size_t inputIndex = ctx->atomic_reduce.fetch_add (1);
+      if (inputIndex >= ctx->queueSize)
+      {
+          break;
       }
-      std::this_thread::yield(); 
-      continue;
-    }
-
-    {
-      std::lock_guard<std::mutex> lg(ctx->shuffleMutex);
-      if (!ctx->shuffleQueue.empty()) { 
-        group = std::move(ctx->shuffleQueue.front());
-        ctx->shuffleQueue.pop();
-        ctx->queueSize.fetch_sub(1, std::memory_order_acq_rel); 
-        popped_group = true;
-      }
-    }
-
-    if (popped_group && !group.empty ())
-    {
-      ctx->client.reduce (&group, ctx); 
-      ctx->jobState.fetch_add (1ULL << 2,
-                                      std::memory_order_acq_rel);
-    }
+      // Pass the address of the current thread's intermediate vector as context to map
+      ctx->client.reduce(&ctx->shuffleVec[inputIndex], ctx);
+      ctx->jobState.fetch_add (1ULL << 2, std::memory_order_acq_rel);
+//    IntermediateVec group;
+//    bool popped_group = false;
+//
+//    if (ctx->queueSize.load(std::memory_order_acquire) == 0) {
+//      if (ctx->shuffleDone.load(std::memory_order_acquire)) {
+//        break;
+//      }
+//      std::this_thread::yield();
+//      continue;
+//    }
+//
+//    {
+////      std::lock_guard<std::mutex> lg(ctx->shuffleMutex);
+//      if (!ctx->shuffleVec.empty()) {
+//        group = std::move(ctx->shuffleVec.front());
+//        ctx->shuffleVec.pop();
+//        ctx->queueSize.fetch_sub(1, std::memory_order_acq_rel);
+//        popped_group = true;
+//      }
+//    }
+//
+//    if (popped_group && !group.empty ())
+//    {
+//      ctx->client.reduce (&group, ctx);
+//      ctx->jobState.fetch_add (1ULL << 2,
+//                                      std::memory_order_acq_rel);
+//    }
   }
 }
 
@@ -251,13 +260,22 @@ JobHandle startMapReduceJob(const MapReduceClient &client_ref,
         for (int i = 0; i < multiThreadLevel; ++i) {
             ctx->workers.emplace_back([ctx, i]() { 
                 mapPhase(ctx, i); 
-                sortPhase(ctx, i); 
+                sortPhase(ctx, i);
                 
-                if (i == 0) { 
+                if (i == 0) {
+                    uint64_t state_after_shuffle = ctx->jobState.load(std::memory_order_acquire);
+                    uint32_t total_items_for_reduce = JobContext::calculateTotal(state_after_shuffle);
+                    ctx->jobState.store(
+                            ((uint64_t)total_items_for_reduce << 33) |
+                            (0ULL << 2) |
+                            (uint64_t)SHUFFLE_STAGE ,
+                            std::memory_order_release
+                    );
+//                    std::cout<<"blaa    "<<JobContext::calculateStage(ctx->jobState.load());
                     shufflePhase(ctx); 
 
-                    uint64_t state_after_shuffle = ctx->jobState.load(std::memory_order_acquire);
-                    uint32_t total_items_for_reduce = JobContext::calculateTotal(state_after_shuffle); 
+                    state_after_shuffle = ctx->jobState.load(std::memory_order_acquire);
+                     total_items_for_reduce = JobContext::calculateTotal(state_after_shuffle);
 
                     ctx->jobState.store(
                         ((uint64_t)total_items_for_reduce << 33) |
@@ -266,14 +284,18 @@ JobHandle startMapReduceJob(const MapReduceClient &client_ref,
                         std::memory_order_release
                     );
                     
-                    ctx->reducePhaseStartCV.notify_all(); 
-                } else {
-                    std::unique_lock<std::mutex> lk(ctx->reducePhaseStartMutex);
-                    ctx->reducePhaseStartCV.wait(lk, [ctx]() { 
-                        return ctx->shuffleDone.load(std::memory_order_acquire); 
-                    });
+//                    ctx->reducePhaseStartCV.notify_all();
                 }
+                ctx->mapSortBarrier.barrier();
+
+//                else {
+//                    std::unique_lock<std::mutex> lk(ctx->reducePhaseStartMutex);
+//                    ctx->reducePhaseStartCV.wait(lk, [ctx]() {
+//                        return ctx->shuffleDone.load(std::memory_order_acquire);
+//                    });
+//                }
                 reducePhase(ctx);
+                ctx->mapSortBarrier.barrier();
             });
         }
     }
@@ -325,20 +347,29 @@ void getJobState (JobHandle job, JobState *state)
   uint32_t total = JobContext::calculateTotal (atomicValue);
   uint32_t progress = JobContext::calculateProgress (atomicValue);
   state->stage = JobContext::calculateStage (atomicValue);
-
-  if (state->stage == UNDEFINED_STAGE) {
-      state->percentage = 0.0f; 
-  } else if (total == 0) {
-      state->percentage = 100.0f; 
-  } else {
     float p_val = static_cast<float>(progress);
     float t_val = static_cast<float>(total);
-    if (p_val >= t_val) { 
+//    std::cout<<p_val<<"   total:"<<t_val<<std::endl;
+    if (p_val >= t_val) {
         state->percentage = 100.0f;
-    } else {
+    }
+    else {
         state->percentage = 100.0f * (p_val / t_val);
     }
-  }
+//    }
+//  if (state->stage == UNDEFINED_STAGE) {
+//      state->percentage = 0.0f;
+//  } else if (total == 0) {
+//      state->percentage = 100.0f;
+//  } else {
+//    float p_val = static_cast<float>(progress);
+//    float t_val = static_cast<float>(total);
+//    if (p_val >= t_val) {
+//        state->percentage = 100.0f;
+//    } else {
+//        state->percentage = 100.0f * (p_val / t_val);
+//    }
+//  }
 }
 
 void closeJobHandle (JobHandle job)
