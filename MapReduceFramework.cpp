@@ -258,9 +258,9 @@ JobHandle startMapReduceJob(const MapReduceClient &client_ref,
                     uint32_t total_items_for_reduce = JobContext::calculateTotal(state_after_shuffle); 
 
                     ctx->jobState.store(
-                        (uint64_t)REDUCE_STAGE |
-                        (0ULL << 2) | 
-                        ((uint64_t)total_items_for_reduce << 33), 
+                        ((uint64_t)total_items_for_reduce << 33) |
+                        (0ULL << 2) |
+                        (uint64_t)REDUCE_STAGE ,
                         std::memory_order_release
                     );
                     
