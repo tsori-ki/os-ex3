@@ -2,6 +2,8 @@
 #define MAPREDUCEFRAMEWORK_H
 
 #include "MapReduceClient.h"
+#include <cstdint>
+
 
 typedef void* JobHandle;
 
@@ -22,6 +24,6 @@ JobHandle startMapReduceJob(const MapReduceClient& client,
 void waitForJob(JobHandle job);
 void getJobState(JobHandle job, JobState* state);
 void closeJobHandle(JobHandle job);
-	
+uint32_t getTotalTasks(JobHandle job);
 	
 #endif //MAPREDUCEFRAMEWORK_H

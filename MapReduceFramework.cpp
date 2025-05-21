@@ -137,7 +137,7 @@ void shufflePhase (JobContext *jobContext)
       if (!vec.empty ())
       {
         K2 *candidate = vec.back ().first;
-        if (!currentKey || *candidate < *currentKey)
+        if (!currentKey || *currentKey < *candidate)
         {
           currentKey = candidate;
         }
@@ -162,14 +162,16 @@ void shufflePhase (JobContext *jobContext)
       std::lock_guard<std::mutex> lg (jobContext->shuffleMutex);
       jobContext->shuffleQueue.push (std::move (group));
       // 1d) Update the progress counter
-      jobContext->jobState.fetch_add (static_cast<uint64_t>(group.size ())
-                                          << 2, std::memory_order_acq_rel); // increment the progress counter
+      jobContext->jobState.fetch_add (1ULL,std::memory_order_acq_rel); // increment the progress counter
       // 1e) Update the queue size
 
       jobContext->queueSize.fetch_add (1);  // your atomic counter for number of groups
     }
   }
-
+  uint64_t totalTasks = jobContext->queueSize.load(std::memory_order_acquire);
+  uint64_t currentState = jobContext->jobState.load(std::memory_order_acquire);
+  uint64_t newState = (currentState & ~(0x7FFFFFFFULL << 33)) | (totalTasks << 33);
+  jobContext->jobState.store(newState, std::memory_order_release);
 
   // 2) Signal “no more groups”
   jobContext->shuffleDone.store (true, std::memory_order_release);
@@ -207,7 +209,7 @@ void reducePhase (JobContext *ctx)
     if (popped_group && !group.empty ())
     {
       ctx->client.reduce (&group, ctx); 
-      ctx->jobState.fetch_add (static_cast<uint64_t>(group.size()) << 2, 
+      ctx->jobState.fetch_add (1ULL << 2,
                                       std::memory_order_acq_rel);
     }
   }
@@ -317,8 +319,9 @@ void getJobState (JobHandle job, JobState *state)
        std::fflush(stdout);
        std::exit(1);
   }
-
-  uint64_t atomicValue = jobContext->jobState.load(std::memory_order_acquire);
+  JobContext* ctx = static_cast<JobContext*>(job);
+  uint64_t atomicValue = ctx->jobState.load
+      (std::memory_order_acquire);
   uint32_t total = JobContext::calculateTotal (atomicValue);
   uint32_t progress = JobContext::calculateProgress (atomicValue);
   state->stage = JobContext::calculateStage (atomicValue);
@@ -350,3 +353,13 @@ void closeJobHandle (JobHandle job)
   delete jobContext;
 }
 
+uint32_t getTotalTasks(JobHandle job) {
+  auto jobContext = static_cast<JobContext*>(job);
+  if (!jobContext) {
+    std::fprintf(stdout, "system error: invalid job handle\n");
+    std::fflush(stdout);
+    std::exit(1);
+  }
+  uint64_t atomicValue = jobContext->jobState.load(std::memory_order_acquire);
+  return JobContext::calculateTotal(atomicValue);
+}
