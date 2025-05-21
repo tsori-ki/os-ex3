@@ -33,7 +33,7 @@ struct JobContext
 
     // --- Shuffle-phase queue & coordination ---
     std::mutex shuffleMutex;
-    std::queue<IntermediateVec> shuffleQueue;
+    std::vector<IntermediateVec> shuffleQueue;
     std::atomic<uint64_t> queueSize{0};
     std::atomic<bool> shuffleDone{false};
 
@@ -160,7 +160,7 @@ void shufflePhase (JobContext *jobContext)
     // 1c) Push that group onto the shared queue
     {
       std::lock_guard<std::mutex> lg (jobContext->shuffleMutex);
-      jobContext->shuffleQueue.push (std::move (group));
+      jobContext->shuffleQueue.push_back (std::move (group));
       // 1d) Update the progress counter
       jobContext->jobState.fetch_add (static_cast<uint64_t>(group.size ())
                                           << 2, std::memory_order_acq_rel); // increment the progress counter
@@ -174,9 +174,6 @@ void shufflePhase (JobContext *jobContext)
   // 2) Signal “no more groups”
   jobContext->shuffleDone.store (true, std::memory_order_release);
 }
-
-
-
 
 
 void reducePhase (JobContext *ctx)
@@ -196,10 +193,10 @@ void reducePhase (JobContext *ctx)
 
     {
       std::lock_guard<std::mutex> lg(ctx->shuffleMutex);
-      if (!ctx->shuffleQueue.empty()) { 
-        group = std::move(ctx->shuffleQueue.front());
-        ctx->shuffleQueue.pop();
-        ctx->queueSize.fetch_sub(1, std::memory_order_acq_rel); 
+      if (!ctx->shuffleQueue.empty()) {
+        group = std::move(ctx->shuffleQueue.back());
+        ctx->shuffleQueue.pop_back();
+        ctx->queueSize.fetch_sub(1, std::memory_order_acq_rel);
         popped_group = true;
       }
     }
@@ -226,67 +223,124 @@ void emit3 (K3 *key, V3 *value, void *context)
   jobCtx->outputVec->emplace_back (key, value);
 }
 
-JobHandle startMapReduceJob(const MapReduceClient &client_ref, 
-                           const InputVec   &inputVec,
-                           OutputVec        &outputVec,
-                           int               multiThreadLevel)
+JobHandle startMapReduceJob(
+    const MapReduceClient &client_ref,
+    const InputVec       &inputVec,
+    OutputVec            &outputVec,
+    int                    multiThreadLevel)
 {
-    auto ctx = new (std::nothrow) JobContext(client_ref, inputVec, outputVec, multiThreadLevel);
+    // 1) Clamp thread count to [1 .. inputVec.size()]
+    int numThreads = std::min(multiThreadLevel, (int)inputVec.size());
+    if (numThreads < 1) numThreads = 1;
+
+    // 2) Allocate the shared context
+    auto *ctx = new (std::nothrow)
+        JobContext(client_ref, inputVec, outputVec, numThreads);
     if (!ctx) {
-        std::fprintf(stdout, "system error: Failed to allocate memory for JobContext\n");
-        std::fflush(stdout);
+        std::fprintf(stderr, "system error: Failed to allocate JobContext\n");
         std::exit(1);
     }
 
+    // 3) Publish initial MAP_STAGE: total = inputVec.size(), progress = 0
     ctx->jobState.store(
-        ((uint64_t)inputVec.size() << 33) | 
-        (0ULL << 2) |                       
-        (uint64_t)MAP_STAGE,                
+        (uint64_t(inputVec.size()) << 33) |
+        (0ULL << 2) |
+        uint64_t(MAP_STAGE),
         std::memory_order_release
     );
 
-    try {
-        for (int i = 0; i < multiThreadLevel; ++i) {
-            ctx->workers.emplace_back([ctx, i]() { 
-                mapPhase(ctx, i); 
-                sortPhase(ctx, i); 
-                
-                if (i == 0) { 
-                    shufflePhase(ctx); 
+    // 4) === fast‐path for a single thread ===
+    if (numThreads == 1) {
+        // -- map all inputs --
+        mapPhase(ctx, /*threadID=*/0);
 
-                    uint64_t state_after_shuffle = ctx->jobState.load(std::memory_order_acquire);
-                    uint32_t total_items_for_reduce = JobContext::calculateTotal(state_after_shuffle); 
+        // mark MAP done
+        ctx->jobState.store(
+            (uint64_t(inputVec.size()) << 33) |
+            (uint64_t(inputVec.size()) << 2) |
+            uint64_t(MAP_STAGE),
+            std::memory_order_release
+        );
+
+        // -- sort the one intermediate vector --
+        sortPhase(ctx, /*threadID=*/0);
+
+        // now do grouping+reduce directly on intermediates[0]:
+        auto &iv = ctx->intermediates[0];
+        // because sortPhase already barrier-synced (and here only one thread),
+        // `iv` is sorted ascending by key
+        size_t i = 0, n = iv.size();
+        while (i < n) {
+            // collect one group of identical keys
+            K2 *currentKey = iv[i].first;
+            IntermediateVec group;
+            while (i < n && !(*iv[i].first < *currentKey) && !(*currentKey < *iv[i].first)) {
+                group.push_back(iv[i]);
+                ++i;
+            }
+            // call reduce on that group
+            ctx->client.reduce(&group, ctx);
+        }
+
+        return static_cast<JobHandle>(ctx);
+    }
+
+    // 5) === multi‐threaded path ===
+    try {
+        for (int t = 0; t < numThreads; ++t) {
+            ctx->workers.emplace_back([ctx, t]() {
+                mapPhase(ctx, t);
+                sortPhase(ctx, t);
+
+                // barrier in sortPhase synchronizes all threads
+                if (t == 0) {
+                    // only thread 0 does shuffle + wake others
+                    uint64_t totalInter = 0;
+                    for (int k = 0; k < ctx->numThreads; ++k)
+                        totalInter += ctx->intermediates[k].size();
 
                     ctx->jobState.store(
-                        (uint64_t)REDUCE_STAGE |
-                        (0ULL << 2) | 
-                        ((uint64_t)total_items_for_reduce << 33), 
+                        (totalInter << 33) |
+                        (0ULL << 2) |
+                        uint64_t(SHUFFLE_STAGE),
                         std::memory_order_release
                     );
-                    
-                    ctx->reducePhaseStartCV.notify_all(); 
-                } else {
+
+                    shufflePhase(ctx);
+                    {
+                        std::lock_guard<std::mutex> lk(ctx->reducePhaseStartMutex);
+                        ctx->shuffleDone.store(true, std::memory_order_release);
+                    }
+                    ctx->reducePhaseStartCV.notify_all();
+
+                    uint64_t totForReduce = JobContext::calculateTotal(
+                        ctx->jobState.load(std::memory_order_acquire));
+                    ctx->jobState.store(
+                        (totForReduce << 33) |
+                        (0ULL << 2) |
+                        uint64_t(REDUCE_STAGE),
+                        std::memory_order_release
+                    );
+                }
+                else {
                     std::unique_lock<std::mutex> lk(ctx->reducePhaseStartMutex);
-                    ctx->reducePhaseStartCV.wait(lk, [ctx]() { 
-                        return ctx->shuffleDone.load(std::memory_order_acquire); 
+                    ctx->reducePhaseStartCV.wait(lk, [ctx]() {
+                        return ctx->shuffleDone.load(std::memory_order_acquire);
                     });
                 }
+
                 reducePhase(ctx);
             });
         }
     }
-    catch (const std::system_error &e) { 
-        std::fprintf(stdout, "system error: %s\n", e.what());
-        std::fflush(stdout);
+    catch (const std::system_error &e) {
+        std::fprintf(stderr, "system error: %s\n", e.what());
         std::exit(1);
     }
-    catch (const std::exception &e) { 
-        std::fprintf(stdout, "system error: %s\n", e.what());
-        std::fflush(stdout);
-        std::exit(1);
-    }
+
     return static_cast<JobHandle>(ctx);
 }
+
 
 void waitForJob (JobHandle job)
 {
@@ -349,4 +403,3 @@ void closeJobHandle (JobHandle job)
   waitForJob (job); 
   delete jobContext;
 }
-

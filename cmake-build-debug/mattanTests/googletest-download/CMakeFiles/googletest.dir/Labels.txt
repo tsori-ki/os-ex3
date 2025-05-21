@@ -1,0 +1,14 @@
+# Target labels
+ googletest
+# Source files and their labels
+/Users/br/Desktop/OS_excersizes/os-ex3-1/cmake-build-debug/mattanTests/googletest-download/CMakeFiles/googletest
+/Users/br/Desktop/OS_excersizes/os-ex3-1/cmake-build-debug/mattanTests/googletest-download/CMakeFiles/googletest.rule
+/Users/br/Desktop/OS_excersizes/os-ex3-1/cmake-build-debug/mattanTests/googletest-download/CMakeFiles/googletest-complete.rule
+/Users/br/Desktop/OS_excersizes/os-ex3-1/cmake-build-debug/mattanTests/googletest-download/googletest-prefix/src/googletest-stamp/googletest-build.rule
+/Users/br/Desktop/OS_excersizes/os-ex3-1/cmake-build-debug/mattanTests/googletest-download/googletest-prefix/src/googletest-stamp/googletest-configure.rule
+/Users/br/Desktop/OS_excersizes/os-ex3-1/cmake-build-debug/mattanTests/googletest-download/googletest-prefix/src/googletest-stamp/googletest-download.rule
+/Users/br/Desktop/OS_excersizes/os-ex3-1/cmake-build-debug/mattanTests/googletest-download/googletest-prefix/src/googletest-stamp/googletest-install.rule
+/Users/br/Desktop/OS_excersizes/os-ex3-1/cmake-build-debug/mattanTests/googletest-download/googletest-prefix/src/googletest-stamp/googletest-mkdir.rule
+/Users/br/Desktop/OS_excersizes/os-ex3-1/cmake-build-debug/mattanTests/googletest-download/googletest-prefix/src/googletest-stamp/googletest-patch.rule
+/Users/br/Desktop/OS_excersizes/os-ex3-1/cmake-build-debug/mattanTests/googletest-download/googletest-prefix/src/googletest-stamp/googletest-test.rule
+/Users/br/Desktop/OS_excersizes/os-ex3-1/cmake-build-debug/mattanTests/googletest-download/googletest-prefix/src/googletest-stamp/googletest-update.rule

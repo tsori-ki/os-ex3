@@ -1,0 +1,11 @@
+{
+	"InstallScripts" : 
+	[
+		"/Users/br/Desktop/OS_excersizes/os-ex3-1/cmake-build-debug/cmake_install.cmake",
+		"/Users/br/Desktop/OS_excersizes/os-ex3-1/cmake-build-debug/mattanTests/cmake_install.cmake",
+		"/Users/br/Desktop/OS_excersizes/os-ex3-1/cmake-build-debug/mattanTests/googletest-build/cmake_install.cmake",
+		"/Users/br/Desktop/OS_excersizes/os-ex3-1/cmake-build-debug/mattanTests/googletest-build/googlemock/cmake_install.cmake",
+		"/Users/br/Desktop/OS_excersizes/os-ex3-1/cmake-build-debug/mattanTests/googletest-build/googletest/cmake_install.cmake"
+	],
+	"Parallel" : false
+}
